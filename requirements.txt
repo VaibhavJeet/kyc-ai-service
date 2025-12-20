@@ -17,7 +17,7 @@ scikit-image==0.22.0
 insightface==0.7.3
 
 # PaddleOCR for document text extraction
-paddlepaddle==2.6.0
+paddlepaddle==2.6.2
 paddleocr==2.7.3
 
 # Image processing
