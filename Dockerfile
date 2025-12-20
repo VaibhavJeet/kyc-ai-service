@@ -68,7 +68,8 @@ ENV PYTHONUNBUFFERED=1 \
     MODEL_CACHE_DIR=/app/model_cache \
     HOST=0.0.0.0 \
     PORT=8001 \
-    WORKERS=2
+    WORKERS=2 \
+    LD_PRELOAD=""
 
 # Expose port
 EXPOSE 8001

@@ -7,7 +7,8 @@ pydantic==2.5.3
 pydantic-settings==2.1.0
 
 # AI/ML - ONNX Runtime (CPU-only, lightweight)
-onnxruntime==1.16.3
+# Using newer version to avoid executable stack issues on Debian Trixie
+onnxruntime==1.20.2
 numpy==1.26.3
 opencv-python-headless==4.9.0.80
 Pillow==10.2.0
