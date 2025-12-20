@@ -2,7 +2,7 @@
 # Multi-stage build for optimized image size
 
 # ============= Builder Stage =============
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # ============= Production Stage =============
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Install runtime dependencies
 # Required for insightface and paddleocr
