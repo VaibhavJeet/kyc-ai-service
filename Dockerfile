@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     git \
     libgl1 \
-    libglx-mesa0 \
+    libglx0 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -30,9 +30,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 FROM python:3.11-slim
 
 # Install runtime dependencies
+# Required for insightface and paddleocr
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
-    libglx-mesa0 \
+    libglx0 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
