@@ -2,14 +2,15 @@
 # Multi-stage build for optimized image size
 
 # ============= Builder Stage =============
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     git \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglx-mesa0 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -30,7 +31,8 @@ FROM python:3.11-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
+    libgl1 \
+    libglx-mesa0 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
