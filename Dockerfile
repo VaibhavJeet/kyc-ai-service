@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender1 \
     libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -46,15 +47,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Create app directory
 WORKDIR /app
 
-# Create model cache directory
+# Create model cache directory with proper permissions
 RUN mkdir -p /app/model_cache
 
 # Copy application code
 COPY app/ ./app/
 
-# Create non-root user for security
-RUN groupadd -r kyc && useradd -r -g kyc kyc
-RUN chown -R kyc:kyc /app
+# Create non-root user for security and set permissions
+RUN groupadd -r kyc && useradd -r -g kyc kyc && \
+    chown -R kyc:kyc /app
+
 USER kyc
 
 # Environment variables
@@ -68,9 +70,9 @@ ENV PYTHONUNBUFFERED=1 \
 # Expose port
 EXPOSE 8001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8001/api/v1/health', timeout=5)" || exit 1
+# Health check using curl (more reliable)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8001/api/v1/health || exit 1
 
 # Run the application
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
