@@ -51,14 +51,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
 
 # Create model cache directory with proper permissions
-RUN mkdir -p /app/model_cache
+# Also create matplotlib config directory
+RUN mkdir -p /app/model_cache /app/model_cache/.matplotlib
 
 # Copy application code
 COPY app/ ./app/
 
 # Create non-root user for security and set permissions
-RUN groupadd -r kyc && useradd -r -g kyc kyc && \
-    chown -R kyc:kyc /app
+RUN groupadd -r kyc && useradd -r -g kyc -m -d /home/kyc kyc && \
+    chown -R kyc:kyc /app && \
+    chown -R kyc:kyc /home/kyc
 
 USER kyc
 
@@ -69,7 +71,9 @@ ENV PYTHONUNBUFFERED=1 \
     HOST=0.0.0.0 \
     PORT=8001 \
     WORKERS=2 \
-    LD_PRELOAD=""
+    LD_PRELOAD="" \
+    MPLCONFIGDIR=/app/model_cache/.matplotlib \
+    HOME=/home/kyc
 
 # Expose port
 EXPOSE 8001
