@@ -34,7 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && rm -rf /tmp/* /var/tmp/*
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -43,19 +44,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Create app directory
 WORKDIR /app
 
-# Create model directory
+# Create model directory (models will be downloaded at runtime)
 RUN mkdir -p /app/models
 
 # Copy application code
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-# Download models during build (models are auto-downloaded if missing)
-# Set DOWNLOAD_MODELS=false to skip and mount models as volume instead
-ARG DOWNLOAD_MODELS=true
-RUN if [ "$DOWNLOAD_MODELS" = "true" ]; then \
-    python scripts/download_models.py --models-dir /app/models || echo "Model download skipped"; \
-    fi
+# Models are downloaded automatically at runtime by app/main.py
+# This reduces image size by ~325MB and allows models to be updated without rebuilding
 
 # Create non-root user for security
 RUN groupadd -r aiservice && useradd -r -g aiservice -m -d /home/aiservice aiservice && \

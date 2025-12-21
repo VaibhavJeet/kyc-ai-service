@@ -1,41 +1,49 @@
 # Python
-__pycache__/
+__pycache__
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-dist/
 *.egg-info/
+dist/
+build/
 
-# Virtual Environment
-.venv/
+# Virtual environments
 venv/
+env/
 ENV/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+docs/
 
 # Environment
 .env
 .env.local
 
-# Git
-.git/
-.gitignore
+# Logs
+*.log
+logs/
+
+# Models (download at runtime, not during build)
+models/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Documentation
-*.md
-!README.md
-
-# Large model files (mount as volume instead)
-# Uncomment if you want to exclude models from build
-# models/*.gguf
-# models/*.onnx
+# OS
+.DS_Store
+Thumbs.db
