@@ -1,4 +1,5 @@
-# KYC AI Microservice Dockerfile
+# AI Service Dockerfile
+# Ultra-lightweight: ~325MB disk, ~750MB RAM peak
 # Multi-stage build for optimized image size
 
 # ============= Builder Stage =============
@@ -9,12 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     git \
-    libgl1 \
-    libglx0 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create virtual environment
@@ -30,14 +25,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
 FROM python:3.12-slim
 
 # Install runtime dependencies
-# Required for insightface and paddleocr
+# - Tesseract for OCR
+# - libgomp for ONNX Runtime
+# - curl for health checks
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 \
-    libglx0 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
@@ -50,36 +43,39 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Create app directory
 WORKDIR /app
 
-# Create model cache directory with proper permissions
-# Also create matplotlib config directory
-RUN mkdir -p /app/model_cache /app/model_cache/.matplotlib
+# Create model directory
+RUN mkdir -p /app/models
 
 # Copy application code
 COPY app/ ./app/
+COPY scripts/ ./scripts/
 
-# Create non-root user for security and set permissions
-RUN groupadd -r kyc && useradd -r -g kyc -m -d /home/kyc kyc && \
-    chown -R kyc:kyc /app && \
-    chown -R kyc:kyc /home/kyc
+# Download models during build (models are auto-downloaded if missing)
+# Set DOWNLOAD_MODELS=false to skip and mount models as volume instead
+ARG DOWNLOAD_MODELS=true
+RUN if [ "$DOWNLOAD_MODELS" = "true" ]; then \
+    python scripts/download_models.py --models-dir /app/models || echo "Model download skipped"; \
+    fi
 
-USER kyc
+# Create non-root user for security
+RUN groupadd -r aiservice && useradd -r -g aiservice -m -d /home/aiservice aiservice && \
+    chown -R aiservice:aiservice /app
+
+USER aiservice
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    MODEL_CACHE_DIR=/app/model_cache \
     HOST=0.0.0.0 \
     PORT=8001 \
-    WORKERS=2 \
-    LD_PRELOAD="" \
-    MPLCONFIGDIR=/app/model_cache/.matplotlib \
-    HOME=/home/kyc
+    MODEL_CACHE_DIR=/app/models \
+    HOME=/home/aiservice
 
 # Expose port
 EXPOSE 8001
 
-# Health check using curl (more reliable)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8001/api/v1/health || exit 1
 
 # Run the application

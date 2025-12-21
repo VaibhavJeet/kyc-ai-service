@@ -1,1 +1,2 @@
-# KYC AI Microservice
+# AI Service - Ultra-Lightweight AI Microservice
+__version__ = "1.0.0"

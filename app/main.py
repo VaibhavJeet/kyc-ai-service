@@ -1,19 +1,23 @@
 """
-KYC AI Microservice - Main Application
-FastAPI server for identity verification with AI models
+AI Service - Ultra-Lightweight FastAPI Microservice
+Handles: Chat, Content Generation, KYC Verification
+Total footprint: ~325MB disk, ~750MB RAM peak
 """
 
+import os
+import sys
+import asyncio
 import structlog
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_fastapi_instrumentator import Instrumentator
 
-from .config import settings
-from .api.routes import router
-from .services.face_recognition import face_recognition_service
-from .services.anti_spoof import anti_spoof_service
-from .services.document_ocr import document_ocr_service
+from app.core.config import get_settings
+from app.api.routes import router
+from app.services.llm_service import get_llm_service
+from app.services.face_service import get_face_service
+from app.services.ocr_service import get_ocr_service
 
 # Configure structured logging
 structlog.configure(
@@ -21,12 +25,8 @@ structlog.configure(
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
         structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer(),
+        structlog.processors.JSONRenderer()
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
     context_class=dict,
@@ -34,121 +34,122 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-logger = structlog.get_logger()
+logger = structlog.get_logger(__name__)
+
+
+async def check_and_download_models():
+    """Check for models and download if missing."""
+    settings = get_settings()
+    models_dir = Path(settings.model_cache_dir)
+
+    # Required models
+    required_models = [
+        "gemma-3-270m-it-q4_k_m.gguf",
+        "ultra_light_face_slim.onnx",
+        "mobilefacenet_int8.onnx",
+        "age_gender_mobilenet_int8.onnx",
+    ]
+
+    missing = [m for m in required_models if not (models_dir / m).exists()]
+
+    if missing:
+        logger.info(f"Missing {len(missing)} models, attempting download...")
+        try:
+            # Import and run downloader
+            sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+            from download_models import ModelDownloader
+
+            downloader = ModelDownloader(str(models_dir))
+            await downloader.download_all()
+        except Exception as e:
+            logger.warning(f"Auto-download failed: {e}. Run 'python scripts/download_models.py' manually.")
+    else:
+        logger.info("All models present")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler - initialize models on startup"""
-    logger.info("Starting KYC AI Microservice...")
+    """Application lifespan - initialize and cleanup services"""
+    logger.info("Starting AI Service...")
 
-    # Initialize models in order of importance
-    models_status = {}
+    # Check and download models if missing
+    await check_and_download_models()
 
-    # 1. Face recognition (most critical)
-    try:
-        success = face_recognition_service.initialize()
-        models_status["face_recognition"] = success
-        if success:
-            logger.info("Face recognition service initialized")
-        else:
-            logger.warning("Face recognition service failed to initialize")
-    except Exception as e:
-        logger.error("Face recognition initialization error", error=str(e))
-        models_status["face_recognition"] = False
+    # Initialize services
+    llm = get_llm_service()
+    face = get_face_service()
+    ocr = get_ocr_service()
 
-    # 2. Anti-spoof
-    try:
-        success = anti_spoof_service.initialize()
-        models_status["anti_spoof"] = success
-        if success:
-            logger.info("Anti-spoof service initialized")
-    except Exception as e:
-        logger.error("Anti-spoof initialization error", error=str(e))
-        models_status["anti_spoof"] = False
+    # Initialize in order of importance
+    llm_ok = await llm.initialize()
+    face_ok = await face.initialize()
+    ocr_ok = await ocr.initialize()
 
-    # 3. Document OCR
-    try:
-        success = document_ocr_service.initialize()
-        models_status["document_ocr"] = success
-        if success:
-            logger.info("Document OCR service initialized")
-    except Exception as e:
-        logger.error("Document OCR initialization error", error=str(e))
-        models_status["document_ocr"] = False
-
-    logger.info("Model initialization complete", status=models_status)
+    logger.info(
+        "Services initialized",
+        llm=llm_ok,
+        face=face_ok,
+        ocr=ocr_ok
+    )
 
     yield
 
-    # Cleanup on shutdown
-    logger.info("Shutting down KYC AI Microservice...")
+    # Cleanup
+    logger.info("Shutting down AI Service...")
+    llm.unload()
+    face.unload()
 
 
 # Create FastAPI app
+settings = get_settings()
+
 app = FastAPI(
-    title="KYC AI Microservice",
-    description="""
-    AI-powered identity verification service for KYC processing.
-
-    ## Features
-    - **Face Recognition**: ArcFace-based 512-dim embeddings for accurate face matching
-    - **Liveness Detection**: Multi-layer anti-spoofing (texture, frequency, color, moiré)
-    - **Document OCR**: PaddleOCR for extracting text from identity documents
-    - **Identity Scoring**: Unified scoring combining all verification signals
-
-    ## Document Types Supported
-    - Aadhaar Card
-    - PAN Card
-    - Passport (with MRZ parsing)
-    - Driving License
-    - Voter ID
-
-    ## Privacy
-    - No images are stored
-    - Only privacy-preserving hashes are used for deduplication
-    - All processing happens in-memory
-    """,
+    title="AI Service",
+    description="Ultra-lightweight AI microservice for Chat, Content Generation, and KYC",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
 )
 
-# Configure CORS
-origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS != "*" else ["*"]
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Add Prometheus metrics
-Instrumentator().instrument(app).expose(app)
-
-# Include API routes
-app.include_router(router, prefix="/api/v1")
+# Include routes
+app.include_router(router)
 
 
 # Root endpoint
 @app.get("/")
 async def root():
-    """Root endpoint with service info"""
     return {
-        "service": "KYC AI Microservice",
+        "service": "AI Service",
         "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/api/v1/health",
+        "endpoints": {
+            "health": "/api/v1/health",
+            "chat": "/api/v1/chat",
+            "title": "/api/v1/generate/title",
+            "description": "/api/v1/generate/description",
+            "budget": "/api/v1/generate/budget",
+            "kyc_compare": "/api/v1/kyc/compare-faces",
+            "kyc_liveness": "/api/v1/kyc/liveness",
+            "kyc_ocr": "/api/v1/kyc/ocr",
+            "kyc_verify": "/api/v1/kyc/verify",
+        }
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(
         "app.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        workers=settings.WORKERS,
-        reload=settings.DEBUG,
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug
     )

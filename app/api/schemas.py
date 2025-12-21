@@ -1,185 +1,236 @@
 """
-Pydantic schemas for API request/response validation
+API Schemas - Pydantic models for request/response validation
 """
 
-from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
-from datetime import date, datetime
+from pydantic import BaseModel, Field
 
 
-# ============= Face Verification =============
+# ============= Chat Schemas =============
 
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="Message role: 'user' or 'assistant'")
+    content: str = Field(..., description="Message content")
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., description="User message")
+    history: Optional[List[ChatMessage]] = Field(default=[], description="Conversation history")
+
+
+class ChatResponse(BaseModel):
+    response: str
+    success: bool = True
+    error: Optional[str] = None
+
+
+# ============= Content Generation Schemas =============
+
+class TitleRequest(BaseModel):
+    description: str = Field(..., description="Task description to generate title from")
+
+
+class TitleResponse(BaseModel):
+    title: str
+    success: bool = True
+
+
+class DescriptionRequest(BaseModel):
+    title: str = Field(..., description="Task title")
+    context: Optional[str] = Field(default="", description="Additional context")
+
+
+class DescriptionResponse(BaseModel):
+    description: str
+    success: bool = True
+
+
+class BudgetRequest(BaseModel):
+    title: str = Field(..., description="Task title")
+    description: str = Field(..., description="Task description")
+    category: Optional[str] = Field(default="", description="Task category")
+    currency: Optional[str] = Field(default="INR", description="Currency code")
+
+
+class BudgetResponse(BaseModel):
+    min: float
+    max: float
+    recommended: float
+    currency: str = "INR"
+    success: bool = True
+
+
+# ============= KYC Schemas =============
 
 class FaceCompareRequest(BaseModel):
-    """Request to compare two face images"""
-
-    document_image: str = Field(..., description="Base64 encoded document image")
-    selfie_image: str = Field(..., description="Base64 encoded selfie image")
+    selfie_base64: str = Field(..., description="Base64 encoded selfie image")
+    document_base64: str = Field(..., description="Base64 encoded document photo")
 
 
 class FaceCompareResponse(BaseModel):
-    """Response from face comparison"""
-
-    similarity: float = Field(..., ge=0, le=1, description="Cosine similarity score")
-    is_match: bool = Field(..., description="Whether faces match")
-    confidence: str = Field(..., description="Confidence level: high, medium, low")
-    document_age: Optional[int] = Field(None, description="Estimated age from document photo")
-    selfie_age: Optional[int] = Field(None, description="Estimated age from selfie")
-    embedding_hash: Optional[str] = Field(None, description="Privacy-preserving hash for deduplication")
-    fuzzy_hashes: Optional[List[str]] = Field(None, description="Fuzzy hashes for appearance-tolerant matching")
+    match: bool
+    similarity: float
+    threshold: float
+    success: bool = True
     error: Optional[str] = None
 
 
-class FaceEmbeddingRequest(BaseModel):
-    """Request to extract face embedding"""
-
-    image: str = Field(..., description="Base64 encoded image")
-
-
-class FaceEmbeddingResponse(BaseModel):
-    """Response with face embedding"""
-
-    embedding: Optional[List[float]] = Field(None, description="512-dim face embedding")
-    embedding_hash: Optional[str] = Field(None, description="SHA256 hash of embedding")
-    fuzzy_hashes: Optional[List[str]] = Field(None, description="Fuzzy hashes")
-    age: Optional[int] = Field(None, description="Estimated age")
-    gender: Optional[str] = Field(None, description="Detected gender: M or F")
-    det_score: Optional[float] = Field(None, description="Face detection confidence")
+class LivenessCheckResponse(BaseModel):
+    is_live: bool
+    score: float
+    details: Optional[Dict[str, float]] = None
+    success: bool = True
     error: Optional[str] = None
-
-
-# ============= Liveness Detection =============
-
-
-class LivenessRequest(BaseModel):
-    """Request for liveness detection"""
-
-    image: str = Field(..., description="Base64 encoded selfie image")
-
-
-class LivenessResponse(BaseModel):
-    """Response from liveness detection"""
-
-    is_live: bool = Field(..., description="Whether the image is of a live person")
-    confidence: float = Field(..., ge=0, le=1, description="Confidence score")
-    scores: Dict[str, float] = Field(..., description="Individual check scores")
-    reason: str = Field(..., description="Explanation of result")
-    error: Optional[str] = None
-
-
-# ============= Document Verification =============
 
 
 class DocumentOCRRequest(BaseModel):
-    """Request for document OCR"""
-
-    image: str = Field(..., description="Base64 encoded document image")
-    expected_type: Optional[str] = Field(
-        None, description="Expected document type: aadhaar, pan, passport, etc."
-    )
+    image_base64: str = Field(..., description="Base64 encoded document image")
+    document_type: Optional[str] = Field(default="auto", description="Document type hint")
 
 
 class DocumentOCRResponse(BaseModel):
-    """Response from document OCR"""
-
-    document_type: Optional[str] = Field(None, description="Detected document type")
-    type_confidence: float = Field(0, description="Document type detection confidence")
-    type_match: bool = Field(False, description="Whether detected type matches expected")
-    fields: Dict[str, Any] = Field(default_factory=dict, description="Extracted fields")
-    raw_text: Optional[str] = Field(None, description="Raw OCR text")
-    ocr_confidence: float = Field(0, description="OCR confidence score")
+    text: str
+    document_type: Optional[str] = None
+    document_number: Optional[str] = None
+    name: Optional[str] = None
+    dob: Optional[str] = None
+    confidence: float
+    success: bool = True
     error: Optional[str] = None
 
 
-# ============= Unified Verification =============
+class KYCVerifyRequest(BaseModel):
+    selfie_base64: str = Field(..., description="Base64 encoded selfie")
+    document_base64: str = Field(..., description="Base64 encoded ID document")
+    expected_name: Optional[str] = Field(default=None, description="Expected name for verification")
+    expected_dob: Optional[str] = Field(default=None, description="Expected DOB for verification")
 
 
-class UnifiedVerifyRequest(BaseModel):
-    """Request for complete KYC verification"""
-
-    document_image: str = Field(..., description="Base64 encoded document image")
-    selfie_image: str = Field(..., description="Base64 encoded selfie image")
-    expected_document_type: Optional[str] = Field(None, description="Expected document type")
-    dob: Optional[str] = Field(None, description="Date of birth (YYYY-MM-DD)")
-    device_fingerprint: Optional[str] = Field(None, description="Device fingerprint hash")
-    ip_address: Optional[str] = Field(None, description="Client IP address")
-
-
-class UnifiedVerifyResponse(BaseModel):
-    """Response from complete KYC verification"""
-
-    # Overall result
-    score: float = Field(..., ge=0, le=100, description="Identity confidence score")
-    decision: str = Field(..., description="Decision: auto_verified, manual_review, rejected")
-    confidence: str = Field(..., description="Confidence level: high, medium, low")
-
-    # Breakdown
-    breakdown: Dict[str, float] = Field(..., description="Score breakdown by category")
-    reasons: List[str] = Field(..., description="Human-readable reasons")
-    flags: List[str] = Field(..., description="Warning flags")
-
-    # Face verification
-    face_similarity: float = Field(..., description="Face match score")
-    is_face_match: bool = Field(..., description="Whether faces match")
-
-    # Liveness
-    is_live: bool = Field(..., description="Liveness check result")
-    liveness_confidence: float = Field(..., description="Liveness confidence")
-
-    # Document
-    document_type: Optional[str] = Field(None, description="Detected document type")
-    document_fields: Dict[str, Any] = Field(default_factory=dict, description="Extracted fields")
-
-    # Age
-    estimated_age: Optional[int] = Field(None, description="Estimated age from selfie")
-    age_consistency: Optional[float] = Field(None, description="Age-DOB consistency score")
-
-    # Deduplication
-    embedding_hash: Optional[str] = Field(None, description="Face embedding hash")
-    fuzzy_hashes: Optional[List[str]] = Field(None, description="Fuzzy hashes")
-
+class KYCVerifyResponse(BaseModel):
+    face_match: bool
+    face_similarity: float
+    liveness_score: float
+    is_live: bool
+    document_type: Optional[str] = None
+    document_number: Optional[str] = None
+    name_match: Optional[bool] = None
+    dob_match: Optional[bool] = None
+    overall_pass: bool
+    confidence: float
+    success: bool = True
     error: Optional[str] = None
 
 
-# ============= Identity Scoring =============
+# ============= Anti-Spoof Schemas =============
 
+class AntiSpoofRequest(BaseModel):
+    image_base64: str = Field(..., description="Base64 encoded face image")
+    left_eye: Optional[List[int]] = Field(default=None, description="Left eye [x, y] coordinates")
+    right_eye: Optional[List[int]] = Field(default=None, description="Right eye [x, y] coordinates")
+
+
+class AntiSpoofResponse(BaseModel):
+    is_live: bool
+    confidence: float
+    reason: str
+    scores: Dict[str, float]
+    success: bool = True
+    error: Optional[str] = None
+
+
+# ============= Identity Scoring Schemas =============
 
 class IdentityScoreRequest(BaseModel):
-    """Request for identity scoring calculation"""
-
-    face_similarity: float = Field(..., ge=0, le=1, description="Face match score")
-    liveness_score: float = Field(0.5, ge=0, le=1, description="Liveness score")
-    liveness_passed: bool = Field(False, description="Whether liveness passed")
-    document_confidence: float = Field(0.5, ge=0, le=1, description="Document confidence")
-    ocr_confidence: float = Field(0.5, ge=0, le=1, description="OCR confidence")
-    document_type_verified: bool = Field(False, description="Document type matched")
-    dob: Optional[str] = Field(None, description="Date of birth (YYYY-MM-DD)")
-    estimated_age: Optional[int] = Field(None, description="Estimated age")
-    is_unique_document: bool = Field(True, description="No duplicate document")
-    is_unique_face: bool = Field(True, description="No duplicate face")
-    fuzzy_match_found: bool = Field(False, description="Fuzzy hash match found")
-    device_fingerprint: Optional[str] = Field(None, description="Device fingerprint")
-    previous_rejections: int = Field(0, ge=0, description="Number of previous rejections")
+    face_similarity: float = Field(..., description="Face match similarity 0-1")
+    liveness_score: float = Field(..., description="Liveness confidence 0-1")
+    liveness_passed: bool = Field(..., description="Whether liveness check passed")
+    document_confidence: float = Field(..., description="Document type confidence 0-1")
+    ocr_confidence: float = Field(..., description="OCR confidence 0-100")
+    document_type_verified: bool = Field(default=True, description="Document type matches expected")
+    dob: Optional[str] = Field(default=None, description="Date of birth from document")
+    estimated_age: Optional[int] = Field(default=None, description="Estimated age from face")
+    is_unique_document: bool = Field(default=True, description="Document not used by another user")
+    is_unique_face: bool = Field(default=True, description="Face not matched to another user")
+    fuzzy_match_found: bool = Field(default=False, description="Fuzzy hash matched")
+    device_fingerprint: Optional[str] = Field(default=None, description="Device fingerprint")
+    previous_rejections: int = Field(default=0, description="Number of previous rejections")
 
 
 class IdentityScoreResponse(BaseModel):
-    """Response from identity scoring"""
+    score: float  # 0-100
+    decision: str  # auto_verified, manual_review, rejected
+    confidence: str  # high, medium, low
+    breakdown: Dict[str, float]
+    reasons: List[str]
+    flags: List[str]
+    success: bool = True
+    error: Optional[str] = None
 
-    score: float = Field(..., ge=0, le=100, description="Identity confidence score")
-    decision: str = Field(..., description="Decision: auto_verified, manual_review, rejected")
-    confidence: str = Field(..., description="Confidence level: high, medium, low")
-    breakdown: Dict[str, float] = Field(..., description="Score breakdown")
-    reasons: List[str] = Field(..., description="Human-readable reasons")
-    flags: List[str] = Field(..., description="Warning flags")
+
+# ============= Hash Generation Schemas =============
+
+class GenerateHashRequest(BaseModel):
+    embedding: List[float] = Field(..., description="Face embedding vector")
 
 
-# ============= Health Check =============
+class GenerateHashResponse(BaseModel):
+    embedding_hash: str
+    fuzzy_hashes: List[str]
+    success: bool = True
+
+
+class CompareHashesRequest(BaseModel):
+    hashes1: List[str] = Field(..., description="First set of fuzzy hashes")
+    hashes2: List[str] = Field(..., description="Second set of fuzzy hashes")
+
+
+class CompareHashesResponse(BaseModel):
+    matching_levels: int
+    confidence: float
+    is_match: bool
+    success: bool = True
+
+
+# ============= Complete Verification Schema =============
+
+class CompleteVerifyRequest(BaseModel):
+    document_base64: str = Field(..., description="Base64 encoded ID document")
+    selfie_base64: str = Field(..., description="Base64 encoded selfie")
+    expected_document_type: Optional[str] = Field(default=None, description="Expected document type")
+    dob: Optional[str] = Field(default=None, description="Expected date of birth")
+    device_fingerprint: Optional[str] = Field(default=None, description="Device fingerprint")
+
+
+class CompleteVerifyResponse(BaseModel):
+    score: float
+    decision: str
+    confidence: str
+    face_similarity: float
+    is_face_match: bool
+    is_live: bool
+    liveness_confidence: float
+    document_type: Optional[str] = None
+    document_fields: Dict[str, Any] = {}
+    estimated_age: Optional[int] = None
+    age_consistency: Optional[float] = None
+    embedding_hash: Optional[str] = None
+    fuzzy_hashes: Optional[List[str]] = None
+    breakdown: Dict[str, float] = {}
+    reasons: List[str] = []
+    flags: List[str] = []
+    success: bool = True
+    error: Optional[str] = None
+
+
+# ============= Health Schemas =============
+
+class ServiceStatus(BaseModel):
+    name: str
+    available: bool
+    details: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
-    """Health check response"""
-
-    status: str = Field(..., description="Service status: healthy, degraded, unhealthy")
-    version: str = Field(..., description="Service version")
-    models: Dict[str, bool] = Field(..., description="Model initialization status")
-    uptime_seconds: float = Field(..., description="Service uptime in seconds")
+    status: str = "healthy"
+    services: List[ServiceStatus]
+    version: str = "1.0.0"

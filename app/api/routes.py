@@ -1,388 +1,627 @@
 """
-FastAPI routes for KYC AI Microservice
+API Routes - FastAPI endpoints for all AI services
+Single unified API for: Chat, Content Generation, KYC
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header
-from typing import Optional
-from datetime import date, datetime
+import base64
+import cv2
 import numpy as np
 import structlog
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends, Header
 
-from .schemas import (
-    FaceCompareRequest,
-    FaceCompareResponse,
-    FaceEmbeddingRequest,
-    FaceEmbeddingResponse,
-    LivenessRequest,
-    LivenessResponse,
-    DocumentOCRRequest,
-    DocumentOCRResponse,
-    UnifiedVerifyRequest,
-    UnifiedVerifyResponse,
-    IdentityScoreRequest,
-    IdentityScoreResponse,
-    HealthResponse,
+from app.core.config import get_settings, Settings
+from app.services.llm_service import get_llm_service, LLMService
+from app.services.face_service import get_face_service, FaceService
+from app.services.ocr_service import get_ocr_service, OCRService
+from app.services.anti_spoof_service import get_anti_spoof_service
+from app.services.identity_scoring_service import get_identity_scoring_service
+from app.services.hash_service import get_hash_service
+from app.agents.router import get_router
+from app.api.schemas import (
+    ChatRequest, ChatResponse,
+    TitleRequest, TitleResponse,
+    DescriptionRequest, DescriptionResponse,
+    BudgetRequest, BudgetResponse,
+    FaceCompareRequest, FaceCompareResponse,
+    LivenessCheckResponse,
+    DocumentOCRRequest, DocumentOCRResponse,
+    KYCVerifyRequest, KYCVerifyResponse,
+    HealthResponse, ServiceStatus,
+    # New schemas
+    AntiSpoofRequest, AntiSpoofResponse,
+    IdentityScoreRequest, IdentityScoreResponse,
+    GenerateHashRequest, GenerateHashResponse,
+    CompareHashesRequest, CompareHashesResponse,
+    CompleteVerifyRequest, CompleteVerifyResponse,
 )
-from ..services.face_recognition import face_recognition_service
-from ..services.anti_spoof import anti_spoof_service
-from ..services.document_ocr import document_ocr_service
-from ..services.identity_scoring import identity_scoring_service, VerificationInput
-from ..config import settings
 
-logger = structlog.get_logger()
-
-router = APIRouter()
-
-# Track service start time
-_start_time = datetime.now()
+logger = structlog.get_logger(__name__)
+router = APIRouter(prefix="/api/v1", tags=["AI Service"])
 
 
-def verify_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
+# ============= Dependencies =============
+
+def get_api_key(x_api_key: Optional[str] = Header(None)) -> Optional[str]:
+    return x_api_key
+
+
+async def verify_api_key(
+    api_key: Optional[str] = Depends(get_api_key),
+    settings: Settings = Depends(get_settings)
+):
     """Verify API key if configured"""
-    if settings.API_KEY is None:
-        return True
-    if x_api_key != settings.API_KEY:
+    if settings.api_key and settings.api_key != api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    return True
+
+
+def decode_base64_image(base64_str: str) -> np.ndarray:
+    """Decode base64 string to numpy array image"""
+    try:
+        # Remove data URL prefix if present
+        if "," in base64_str:
+            base64_str = base64_str.split(",")[1]
+
+        img_bytes = base64.b64decode(base64_str)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if img is None:
+            raise ValueError("Failed to decode image")
+
+        return img
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
 
 
 # ============= Health Check =============
 
-
-@router.get("/health", response_model=HealthResponse, tags=["Health"])
+@router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check service health and model status"""
-    uptime = (datetime.now() - _start_time).total_seconds()
+    """Check health of all services"""
+    llm = get_llm_service()
+    face = get_face_service()
+    ocr = get_ocr_service()
 
-    models_status = {
-        "face_recognition": face_recognition_service.is_initialized,
-        "anti_spoof": anti_spoof_service.is_initialized,
-        "document_ocr": document_ocr_service.is_initialized,
-    }
+    services = [
+        ServiceStatus(
+            name="llm",
+            available=llm.is_available(),
+            details="Gemma 3 270M Q4 via llama.cpp"
+        ),
+        ServiceStatus(
+            name="face",
+            available=face.is_available(),
+            details="Ultra-Light Face Detector + MobileFaceNet"
+        ),
+        ServiceStatus(
+            name="ocr",
+            available=ocr.is_available(),
+            details="Tesseract OCR"
+        ),
+    ]
 
-    all_healthy = all(models_status.values())
+    status = "healthy" if any(s.available for s in services) else "degraded"
 
-    return HealthResponse(
-        status="healthy" if all_healthy else "degraded",
-        version="1.0.0",
-        models=models_status,
-        uptime_seconds=uptime,
-    )
+    return HealthResponse(status=status, services=services)
 
 
-# ============= Face Verification =============
+# ============= Chat Endpoints =============
+
+@router.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
+async def chat(request: ChatRequest):
+    """Chat with AI assistant"""
+    llm = get_llm_service()
+
+    if not llm.is_available():
+        return ChatResponse(response="", success=False, error="LLM not available")
+
+    try:
+        messages = [{"role": m.role, "content": m.content} for m in request.history]
+        messages.append({"role": "user", "content": request.message})
+
+        response = await llm.chat(messages)
+        return ChatResponse(response=response)
+
+    except Exception as e:
+        logger.error("Chat failed", error=str(e))
+        return ChatResponse(response="", success=False, error=str(e))
 
 
-@router.post("/verify/face", response_model=FaceCompareResponse, tags=["Face"])
-async def compare_faces(
-    request: FaceCompareRequest,
-    _: bool = Depends(verify_api_key),
-):
-    """
-    Compare faces between document photo and selfie.
-    Returns similarity score and match decision.
-    """
-    logger.info("Face comparison request received")
+# ============= Content Generation Endpoints =============
 
-    if not face_recognition_service.is_initialized:
-        raise HTTPException(status_code=503, detail="Face recognition service not ready")
+@router.post("/generate/title", response_model=TitleResponse, dependencies=[Depends(verify_api_key)])
+async def generate_title(request: TitleRequest):
+    """Generate a title from description"""
+    llm = get_llm_service()
 
-    result = face_recognition_service.compare_faces(
-        request.document_image,
-        request.selfie_image,
-    )
+    if not llm.is_available():
+        return TitleResponse(title="", success=False)
 
-    if result.get("error"):
+    try:
+        title = await llm.generate_title(request.description)
+        return TitleResponse(title=title)
+    except Exception as e:
+        logger.error("Title generation failed", error=str(e))
+        return TitleResponse(title="", success=False)
+
+
+@router.post("/generate/description", response_model=DescriptionResponse, dependencies=[Depends(verify_api_key)])
+async def generate_description(request: DescriptionRequest):
+    """Generate a description from title"""
+    llm = get_llm_service()
+
+    if not llm.is_available():
+        return DescriptionResponse(description="", success=False)
+
+    try:
+        description = await llm.generate_description(request.title, request.context or "")
+        return DescriptionResponse(description=description)
+    except Exception as e:
+        logger.error("Description generation failed", error=str(e))
+        return DescriptionResponse(description="", success=False)
+
+
+@router.post("/generate/budget", response_model=BudgetResponse, dependencies=[Depends(verify_api_key)])
+async def suggest_budget(request: BudgetRequest):
+    """Suggest budget for a task"""
+    llm = get_llm_service()
+
+    if not llm.is_available():
+        return BudgetResponse(min=500, max=5000, recommended=1500, currency=request.currency or "INR", success=False)
+
+    try:
+        budget = await llm.suggest_budget(
+            request.title,
+            request.description,
+            request.category or "",
+            request.currency or "INR"
+        )
+        return BudgetResponse(
+            min=budget.get("min", 500),
+            max=budget.get("max", 5000),
+            recommended=budget.get("recommended", 1500),
+            currency=request.currency or "INR"
+        )
+    except Exception as e:
+        logger.error("Budget suggestion failed", error=str(e))
+        return BudgetResponse(min=500, max=5000, recommended=1500, currency=request.currency or "INR", success=False)
+
+
+# ============= KYC Endpoints =============
+
+@router.post("/kyc/compare-faces", response_model=FaceCompareResponse, dependencies=[Depends(verify_api_key)])
+async def compare_faces(request: FaceCompareRequest):
+    """Compare two face images (selfie vs document photo)"""
+    face = get_face_service()
+
+    if not face.is_available():
+        return FaceCompareResponse(match=False, similarity=0, threshold=0, success=False, error="Face service not available")
+
+    try:
+        selfie = decode_base64_image(request.selfie_base64)
+        document = decode_base64_image(request.document_base64)
+
+        result = await face.compare_faces(selfie, document)
+
         return FaceCompareResponse(
-            similarity=0.0,
-            is_match=False,
-            confidence="low",
-            error=result["error"],
+            match=result["match"],
+            similarity=result["similarity"],
+            threshold=result.get("threshold", 0.45),
+            error=result.get("error")
         )
-
-    # Generate embedding hash for deduplication
-    selfie_analysis = face_recognition_service.get_face_analysis(request.selfie_image)
-    embedding_hash = None
-    fuzzy_hashes = None
-
-    if selfie_analysis:
-        embedding = np.array(selfie_analysis["embedding"])
-        embedding_hash = face_recognition_service.generate_embedding_hash(embedding)
-        fuzzy_hashes = face_recognition_service.generate_fuzzy_hashes(embedding)
-
-    return FaceCompareResponse(
-        similarity=result["similarity"],
-        is_match=result["is_match"],
-        confidence=result["confidence"],
-        document_age=result.get("face1_age"),
-        selfie_age=result.get("face2_age"),
-        embedding_hash=embedding_hash,
-        fuzzy_hashes=fuzzy_hashes,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Face comparison failed", error=str(e))
+        return FaceCompareResponse(match=False, similarity=0, threshold=0, success=False, error=str(e))
 
 
-@router.post("/verify/embedding", response_model=FaceEmbeddingResponse, tags=["Face"])
-async def get_face_embedding(
-    request: FaceEmbeddingRequest,
-    _: bool = Depends(verify_api_key),
-):
-    """
-    Extract face embedding from image.
-    Returns 512-dimensional ArcFace embedding.
-    """
-    if not face_recognition_service.is_initialized:
-        raise HTTPException(status_code=503, detail="Face recognition service not ready")
+@router.post("/kyc/liveness", response_model=LivenessCheckResponse, dependencies=[Depends(verify_api_key)])
+async def check_liveness(selfie_base64: str):
+    """Check if image is a live capture (not a photo of photo)"""
+    face = get_face_service()
 
-    analysis = face_recognition_service.get_face_analysis(request.image)
+    if not face.is_available():
+        return LivenessCheckResponse(is_live=False, score=0, success=False, error="Face service not available")
 
-    if not analysis:
-        return FaceEmbeddingResponse(error="No face detected in image")
+    try:
+        image = decode_base64_image(selfie_base64)
+        result = await face.check_liveness(image)
 
-    embedding = np.array(analysis["embedding"])
-    embedding_hash = face_recognition_service.generate_embedding_hash(embedding)
-    fuzzy_hashes = face_recognition_service.generate_fuzzy_hashes(embedding)
-
-    return FaceEmbeddingResponse(
-        embedding=analysis["embedding"],
-        embedding_hash=embedding_hash,
-        fuzzy_hashes=fuzzy_hashes,
-        age=analysis.get("age"),
-        gender=analysis.get("gender"),
-        det_score=analysis.get("det_score"),
-    )
-
-
-# ============= Liveness Detection =============
-
-
-@router.post("/verify/liveness", response_model=LivenessResponse, tags=["Liveness"])
-async def check_liveness(
-    request: LivenessRequest,
-    _: bool = Depends(verify_api_key),
-):
-    """
-    Perform passive liveness detection on selfie.
-    Detects presentation attacks (print, screen, mask).
-    """
-    if not anti_spoof_service.is_initialized:
-        raise HTTPException(status_code=503, detail="Anti-spoof service not ready")
-
-    result = anti_spoof_service.analyze(request.image)
-
-    if result.get("error"):
-        return LivenessResponse(
-            is_live=False,
-            confidence=0.0,
-            scores={},
-            reason=result["error"],
-            error=result["error"],
+        return LivenessCheckResponse(
+            is_live=result["is_live"],
+            score=result["score"],
+            details=result.get("details"),
+            error=result.get("reason")
         )
-
-    return LivenessResponse(
-        is_live=result["is_live"],
-        confidence=result["confidence"],
-        scores=result["scores"],
-        reason=result["reason"],
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Liveness check failed", error=str(e))
+        return LivenessCheckResponse(is_live=False, score=0, success=False, error=str(e))
 
 
-# ============= Document Verification =============
+@router.post("/kyc/ocr", response_model=DocumentOCRResponse, dependencies=[Depends(verify_api_key)])
+async def extract_document(request: DocumentOCRRequest):
+    """Extract text and info from ID document"""
+    ocr = get_ocr_service()
 
+    if not ocr.is_available():
+        return DocumentOCRResponse(text="", confidence=0, success=False, error="OCR service not available")
 
-@router.post("/verify/document", response_model=DocumentOCRResponse, tags=["Document"])
-async def verify_document(
-    request: DocumentOCRRequest,
-    _: bool = Depends(verify_api_key),
-):
-    """
-    Extract text and verify document type.
-    Supports Aadhaar, PAN, Passport, Driving License, Voter ID.
-    """
-    if not document_ocr_service.is_initialized:
-        raise HTTPException(status_code=503, detail="OCR service not ready")
+    try:
+        image = decode_base64_image(request.image_base64)
+        result = await ocr.extract_document_info(image, request.document_type or "auto")
 
-    # Detect document type
-    type_result = document_ocr_service.detect_document_type(request.image)
-
-    if type_result.get("error"):
-        return DocumentOCRResponse(error=type_result["error"])
-
-    detected_type = type_result["document_type"]
-    type_match = detected_type == request.expected_type if request.expected_type else True
-
-    # Extract fields
-    fields_result = document_ocr_service.extract_fields(request.image, detected_type)
-
-    return DocumentOCRResponse(
-        document_type=detected_type,
-        type_confidence=type_result["confidence"],
-        type_match=type_match,
-        fields=fields_result.get("fields", {}),
-        raw_text=fields_result.get("raw_text"),
-        ocr_confidence=0.8 if fields_result.get("fields") else 0.5,
-    )
-
-
-# ============= Unified Verification =============
-
-
-@router.post("/verify/complete", response_model=UnifiedVerifyResponse, tags=["Unified"])
-async def complete_verification(
-    request: UnifiedVerifyRequest,
-    _: bool = Depends(verify_api_key),
-):
-    """
-    Perform complete KYC verification in one call.
-    Combines face matching, liveness, document OCR, and scoring.
-    """
-    logger.info("Complete verification request received")
-
-    errors = []
-
-    # 1. Face comparison
-    face_result = {"similarity": 0.0, "is_match": False, "confidence": "low"}
-    selfie_age = None
-    embedding_hash = None
-    fuzzy_hashes = None
-
-    if face_recognition_service.is_initialized:
-        face_result = face_recognition_service.compare_faces(
-            request.document_image,
-            request.selfie_image,
+        return DocumentOCRResponse(
+            text=result.get("raw_text", ""),
+            document_type=result.get("document_type"),
+            document_number=result.get("document_number"),
+            name=result.get("name"),
+            dob=result.get("dob"),
+            confidence=result.get("confidence", 0),
+            error=result.get("error")
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("OCR extraction failed", error=str(e))
+        return DocumentOCRResponse(text="", confidence=0, success=False, error=str(e))
 
-        # Get selfie analysis for age and hashes
-        selfie_analysis = face_recognition_service.get_face_analysis(request.selfie_image)
-        if selfie_analysis:
-            selfie_age = selfie_analysis.get("age")
-            embedding = np.array(selfie_analysis["embedding"])
-            embedding_hash = face_recognition_service.generate_embedding_hash(embedding)
-            fuzzy_hashes = face_recognition_service.generate_fuzzy_hashes(embedding)
-    else:
-        errors.append("Face recognition service not available")
 
-    # 2. Liveness detection
-    liveness_result = {"is_live": False, "confidence": 0.5}
-    if anti_spoof_service.is_initialized:
-        liveness_result = anti_spoof_service.analyze(request.selfie_image)
-    else:
-        errors.append("Liveness service not available")
+@router.post("/kyc/verify", response_model=KYCVerifyResponse, dependencies=[Depends(verify_api_key)])
+async def verify_kyc(request: KYCVerifyRequest):
+    """
+    Complete KYC verification:
+    1. Face comparison (selfie vs document photo)
+    2. Liveness check
+    3. Document OCR and verification
+    """
+    face = get_face_service()
+    ocr = get_ocr_service()
 
-    # 3. Document verification
-    doc_type = None
-    doc_fields = {}
-    doc_confidence = 0.5
+    try:
+        selfie = decode_base64_image(request.selfie_base64)
+        document = decode_base64_image(request.document_base64)
 
-    if document_ocr_service.is_initialized:
-        type_result = document_ocr_service.detect_document_type(request.document_image)
-        doc_type = type_result.get("document_type")
-        doc_confidence = type_result.get("confidence", 0.5)
+        # 1. Face comparison
+        face_result = {"match": False, "similarity": 0.0}
+        if face.is_available():
+            face_result = await face.compare_faces(selfie, document)
 
-        if doc_type:
-            fields_result = document_ocr_service.extract_fields(
-                request.document_image, doc_type
+        # 2. Liveness check
+        liveness_result = {"is_live": False, "score": 0.0}
+        if face.is_available():
+            liveness_result = await face.check_liveness(selfie)
+
+        # 3. Document OCR
+        doc_result = {}
+        if ocr.is_available():
+            doc_result = await ocr.verify_document(
+                document,
+                expected_name=request.expected_name,
+                expected_dob=request.expected_dob
             )
-            doc_fields = fields_result.get("fields", {})
-    else:
-        errors.append("OCR service not available")
 
-    # 4. Parse DOB
-    dob = None
-    if request.dob:
-        try:
-            dob = datetime.strptime(request.dob, "%Y-%m-%d").date()
-        except ValueError:
-            pass
+        # Calculate overall pass
+        face_pass = face_result.get("match", False)
+        liveness_pass = liveness_result.get("is_live", False)
+        doc_pass = doc_result.get("document_detected", False)
 
-    # 5. Calculate identity score
-    verification_input = VerificationInput(
-        face_similarity=face_result.get("similarity", 0.0),
-        face_match_source="arcface" if face_recognition_service.is_initialized else "unavailable",
-        liveness_score=liveness_result.get("confidence", 0.5),
-        liveness_passed=liveness_result.get("is_live", False),
-        document_confidence=doc_confidence,
-        document_type_verified=(doc_type == request.expected_document_type)
-        if request.expected_document_type
-        else True,
-        ocr_confidence=0.8 if doc_fields else 0.5,
-        dob=dob,
-        estimated_age=selfie_age,
-        device_fingerprint=request.device_fingerprint,
-        ip_address=request.ip_address,
-    )
+        overall_pass = face_pass and liveness_pass and doc_pass
 
-    scoring_result = identity_scoring_service.score(verification_input)
+        # Confidence based on all factors
+        confidence = (
+            (face_result.get("similarity", 0) * 0.4) +
+            (liveness_result.get("score", 0) * 0.3) +
+            (doc_result.get("confidence", 0) / 100 * 0.3)
+        )
 
-    # Add age consistency to breakdown if available
-    age_consistency = None
-    if dob and selfie_age:
-        age_consistency = identity_scoring_service.calculate_age_consistency(dob, selfie_age)
+        return KYCVerifyResponse(
+            face_match=face_result.get("match", False),
+            face_similarity=face_result.get("similarity", 0),
+            liveness_score=liveness_result.get("score", 0),
+            is_live=liveness_result.get("is_live", False),
+            document_type=doc_result.get("document_type"),
+            document_number=doc_result.get("document_number"),
+            name_match=doc_result.get("name_match"),
+            dob_match=doc_result.get("dob_match"),
+            overall_pass=overall_pass,
+            confidence=confidence
+        )
 
-    return UnifiedVerifyResponse(
-        score=scoring_result.score,
-        decision=scoring_result.decision,
-        confidence=scoring_result.confidence,
-        breakdown=scoring_result.breakdown,
-        reasons=scoring_result.reasons + errors,
-        flags=scoring_result.flags,
-        face_similarity=face_result.get("similarity", 0.0),
-        is_face_match=face_result.get("is_match", False),
-        is_live=liveness_result.get("is_live", False),
-        liveness_confidence=liveness_result.get("confidence", 0.5),
-        document_type=doc_type,
-        document_fields=doc_fields,
-        estimated_age=selfie_age,
-        age_consistency=age_consistency,
-        embedding_hash=embedding_hash,
-        fuzzy_hashes=fuzzy_hashes,
-        error="; ".join(errors) if errors else None,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("KYC verification failed", error=str(e))
+        return KYCVerifyResponse(
+            face_match=False,
+            face_similarity=0,
+            liveness_score=0,
+            is_live=False,
+            overall_pass=False,
+            confidence=0,
+            success=False,
+            error=str(e)
+        )
 
 
-# ============= Identity Scoring =============
+# ============= Advanced KYC Endpoints (Server-Side) =============
+# NOTE: These are for enhanced verification. Flutter app does on-device processing.
 
-
-@router.post("/score/identity", response_model=IdentityScoreResponse, tags=["Scoring"])
-async def calculate_identity_score(
-    request: IdentityScoreRequest,
-    _: bool = Depends(verify_api_key),
-):
+@router.post("/kyc/anti-spoof", response_model=AntiSpoofResponse, dependencies=[Depends(verify_api_key)])
+async def anti_spoof_check(request: AntiSpoofRequest):
     """
-    Calculate identity verification score from provided signals.
-    Used when face matching and liveness are done on-device.
+    Multi-layer anti-spoofing analysis.
+    Detects printed photos, screen displays, and other spoofing attempts.
+
+    NOTE: Flutter app already does this on-device. Use this for:
+    - Server-side verification of borderline cases
+    - When on-device liveness failed but face match passed
     """
-    # Parse DOB
-    dob = None
-    if request.dob:
-        try:
-            dob = datetime.strptime(request.dob, "%Y-%m-%d").date()
-        except ValueError:
-            pass
+    anti_spoof = get_anti_spoof_service()
 
-    verification_input = VerificationInput(
-        face_similarity=request.face_similarity,
-        face_match_source="client",
-        liveness_score=request.liveness_score,
-        liveness_passed=request.liveness_passed,
-        document_confidence=request.document_confidence,
-        document_type_verified=request.document_type_verified,
-        ocr_confidence=request.ocr_confidence,
-        dob=dob,
-        estimated_age=request.estimated_age,
-        is_unique_document=request.is_unique_document,
-        is_unique_face=request.is_unique_face,
-        fuzzy_match_found=request.fuzzy_match_found,
-        device_fingerprint=request.device_fingerprint,
-        previous_rejections=request.previous_rejections,
-    )
+    try:
+        image = decode_base64_image(request.image_base64)
 
-    scoring_result = identity_scoring_service.score(verification_input)
+        # Prepare eye positions if provided
+        eye_positions = None
+        if request.left_eye and request.right_eye:
+            eye_positions = (
+                tuple(request.left_eye),
+                tuple(request.right_eye)
+            )
 
-    return IdentityScoreResponse(
-        score=scoring_result.score,
-        decision=scoring_result.decision,
-        confidence=scoring_result.confidence,
-        breakdown=scoring_result.breakdown,
-        reasons=scoring_result.reasons,
-        flags=scoring_result.flags,
-    )
+        result = await anti_spoof.analyze(image, eye_positions)
+
+        return AntiSpoofResponse(
+            is_live=result["is_live"],
+            confidence=result["confidence"],
+            reason=result["reason"],
+            scores=result["scores"]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Anti-spoof check failed", error=str(e))
+        return AntiSpoofResponse(
+            is_live=True,  # Don't block on error
+            confidence=0.5,
+            reason="Analysis failed",
+            scores={},
+            success=False,
+            error=str(e)
+        )
+
+
+@router.post("/kyc/identity-score", response_model=IdentityScoreResponse, dependencies=[Depends(verify_api_key)])
+async def calculate_identity_score(request: IdentityScoreRequest):
+    """
+    Calculate unified identity score from verification signals.
+    Use this to get a final decision based on all verification factors.
+
+    NOTE: Flutter app sends on-device results. This calculates the final score.
+    """
+    scoring = get_identity_scoring_service()
+
+    try:
+        result = await scoring.calculate_score(
+            face_similarity=request.face_similarity,
+            liveness_score=request.liveness_score,
+            liveness_passed=request.liveness_passed,
+            document_confidence=request.document_confidence,
+            ocr_confidence=request.ocr_confidence,
+            document_type_verified=request.document_type_verified,
+            dob=request.dob,
+            estimated_age=request.estimated_age,
+            is_unique_document=request.is_unique_document,
+            is_unique_face=request.is_unique_face,
+            fuzzy_match_found=request.fuzzy_match_found,
+            device_fingerprint=request.device_fingerprint,
+            previous_rejections=request.previous_rejections,
+        )
+
+        return IdentityScoreResponse(
+            score=result["score"],
+            decision=result["decision"],
+            confidence=result["confidence"],
+            breakdown=result["breakdown"],
+            reasons=result["reasons"],
+            flags=result["flags"]
+        )
+    except Exception as e:
+        logger.error("Identity scoring failed", error=str(e))
+        return IdentityScoreResponse(
+            score=0,
+            decision="manual_review",
+            confidence="low",
+            breakdown={},
+            reasons=["Scoring failed"],
+            flags=["ERROR"],
+            success=False,
+            error=str(e)
+        )
+
+
+@router.post("/kyc/generate-hashes", response_model=GenerateHashResponse, dependencies=[Depends(verify_api_key)])
+async def generate_face_hashes(request: GenerateHashRequest):
+    """
+    Generate privacy-preserving hashes from face embedding.
+    Returns SHA256 hash and fuzzy hashes for duplicate detection.
+
+    NOTE: Flutter app already generates these on-device and sends them.
+    This is for server-side processing when images are verified server-side.
+    """
+    hash_service = get_hash_service()
+
+    try:
+        embedding = np.array(request.embedding)
+
+        embedding_hash = hash_service.generate_embedding_hash(embedding)
+        fuzzy_hashes = hash_service.generate_fuzzy_hashes(embedding)
+
+        return GenerateHashResponse(
+            embedding_hash=embedding_hash,
+            fuzzy_hashes=fuzzy_hashes
+        )
+    except Exception as e:
+        logger.error("Hash generation failed", error=str(e))
+        return GenerateHashResponse(
+            embedding_hash="",
+            fuzzy_hashes=[],
+            success=False
+        )
+
+
+@router.post("/kyc/compare-hashes", response_model=CompareHashesResponse, dependencies=[Depends(verify_api_key)])
+async def compare_fuzzy_hashes(request: CompareHashesRequest):
+    """
+    Compare two sets of fuzzy hashes to detect potential duplicates.
+    Returns match confidence and number of matching levels.
+    """
+    hash_service = get_hash_service()
+
+    try:
+        matching_levels, confidence = hash_service.compare_fuzzy_hashes(
+            request.hashes1,
+            request.hashes2
+        )
+
+        # Consider a match if 2+ levels match (L2 or L3 matches are significant)
+        is_match = matching_levels >= 2 or confidence >= 0.5
+
+        return CompareHashesResponse(
+            matching_levels=matching_levels,
+            confidence=confidence,
+            is_match=is_match
+        )
+    except Exception as e:
+        logger.error("Hash comparison failed", error=str(e))
+        return CompareHashesResponse(
+            matching_levels=0,
+            confidence=0,
+            is_match=False,
+            success=False
+        )
+
+
+@router.post("/verify/complete", response_model=CompleteVerifyResponse, dependencies=[Depends(verify_api_key)])
+async def complete_verification(request: CompleteVerifyRequest):
+    """
+    Complete server-side KYC verification.
+    Performs all checks: face comparison, liveness, OCR, scoring, hash generation.
+
+    NOTE: This is the full server-side pipeline. Use when:
+    - On-device verification failed or was skipped
+    - Manual review escalation with server-side re-verification
+    - Enhanced verification for high-risk transactions
+    """
+    face = get_face_service()
+    ocr = get_ocr_service()
+    anti_spoof = get_anti_spoof_service()
+    scoring = get_identity_scoring_service()
+    hash_service = get_hash_service()
+
+    try:
+        document = decode_base64_image(request.document_base64)
+        selfie = decode_base64_image(request.selfie_base64)
+
+        # 1. Face Detection & Comparison
+        face_result = {"match": False, "similarity": 0.0}
+        embedding_hash = None
+        fuzzy_hashes = None
+        estimated_age = None
+
+        if face.is_available():
+            face_result = await face.compare_faces(selfie, document)
+
+            # Get embedding for hash generation
+            faces = await face.detect_faces(selfie)
+            if faces:
+                box = faces[0]["box"]
+                face_crop = selfie[box[1]:box[3], box[0]:box[2]]
+                embedding = await face.get_embedding(face_crop)
+                if embedding is not None:
+                    embedding_hash = hash_service.generate_embedding_hash(embedding)
+                    fuzzy_hashes = hash_service.generate_fuzzy_hashes(embedding)
+
+                # Age estimation
+                age_result = await face.estimate_age_gender(face_crop)
+                estimated_age = age_result.get("age")
+
+        # 2. Anti-Spoof / Liveness
+        liveness_result = await anti_spoof.analyze(selfie)
+
+        # 3. Document OCR
+        doc_result = {}
+        if ocr.is_available():
+            doc_result = await ocr.extract_document_info(document, request.expected_document_type or "auto")
+
+        # 4. Calculate Identity Score
+        score_result = await scoring.calculate_score(
+            face_similarity=face_result.get("similarity", 0),
+            liveness_score=liveness_result.get("confidence", 0),
+            liveness_passed=liveness_result.get("is_live", False),
+            document_confidence=doc_result.get("confidence", 0) / 100,
+            ocr_confidence=doc_result.get("confidence", 0),
+            document_type_verified=doc_result.get("document_type") is not None,
+            dob=request.dob or doc_result.get("dob"),
+            estimated_age=estimated_age,
+            is_unique_document=True,  # Would need DB check
+            is_unique_face=True,  # Would need DB check
+            fuzzy_match_found=False,  # Would need DB check
+            device_fingerprint=request.device_fingerprint,
+            previous_rejections=0,  # Would need DB check
+        )
+
+        return CompleteVerifyResponse(
+            score=score_result["score"],
+            decision=score_result["decision"],
+            confidence=score_result["confidence"],
+            face_similarity=face_result.get("similarity", 0),
+            is_face_match=face_result.get("match", False),
+            is_live=liveness_result.get("is_live", False),
+            liveness_confidence=liveness_result.get("confidence", 0),
+            document_type=doc_result.get("document_type"),
+            document_fields={
+                "name": doc_result.get("name"),
+                "dob": doc_result.get("dob"),
+                "document_number": doc_result.get("document_number"),
+            },
+            estimated_age=estimated_age,
+            embedding_hash=embedding_hash,
+            fuzzy_hashes=fuzzy_hashes,
+            breakdown=score_result["breakdown"],
+            reasons=score_result["reasons"],
+            flags=score_result["flags"]
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Complete verification failed", error=str(e))
+        return CompleteVerifyResponse(
+            score=0,
+            decision="manual_review",
+            confidence="low",
+            face_similarity=0,
+            is_face_match=False,
+            is_live=False,
+            liveness_confidence=0,
+            success=False,
+            error=str(e)
+        )
+
+
+# ============= Agent Router Endpoint =============
+
+@router.post("/agent/route", dependencies=[Depends(verify_api_key)])
+async def route_query(query: str, context: Optional[dict] = None):
+    """
+    Route a query to appropriate handler using intent classification.
+    Useful for generic/ambiguous requests.
+    """
+    agent_router = get_router()
+    result = await agent_router.route(query, context)
+    return result

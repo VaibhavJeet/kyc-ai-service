@@ -1,5 +1,7 @@
-# KYC AI Microservice Dependencies
-# Build tools (required by PaddleOCR)
+# AI Service - Ultra-Lightweight Dependencies
+# Total footprint: ~325MB disk, ~750MB peak RAM
+
+# Build tools
 setuptools>=69.0.0
 wheel>=0.42.0
 
@@ -10,31 +12,33 @@ python-multipart>=0.0.6,<1.0.0
 pydantic>=2.5.0,<3.0.0
 pydantic-settings>=2.1.0,<3.0.0
 
-# AI/ML - ONNX Runtime (CPU-only, lightweight)
+# LLM - llama.cpp Python bindings
+# Gemma 3 270M Q4 (~200MB model, ~450MB RAM)
+llama-cpp-python>=0.2.90,<1.0.0
+
+# LangChain for orchestration and agents (~40-60MB RAM)
+langchain>=0.3.0,<1.0.0
+langchain-core>=0.3.0,<1.0.0
+
+# ONNX Runtime - lightweight inference for face models (~20MB)
 onnxruntime>=1.16.0,<2.0.0
+
+# Image processing - minimal dependencies
 numpy>=1.26.0,<2.0.0
+scipy>=1.11.0,<2.0.0
 opencv-python-headless>=4.9.0,<5.0.0
 Pillow>=10.2.0,<11.0.0
-scikit-image>=0.22.0,<1.0.0
 
-# InsightFace for ArcFace embeddings
-insightface>=0.7.3,<1.0.0
-
-# PaddleOCR for document text extraction
-paddlepaddle>=2.6.0,<3.0.0
-paddleocr>=2.7.0,<3.0.0
-
-# Image processing
-albumentations>=1.3.1,<2.0.0
+# OCR - Tesseract (C++ based, ~30MB, ~80MB RAM)
+# pytesseract is just a wrapper, actual tesseract must be installed on system
+pytesseract>=0.3.10,<1.0.0
 
 # Utilities
-python-jose[cryptography]>=3.3.0,<4.0.0
 httpx>=0.26.0,<1.0.0
 aiofiles>=23.2.0,<24.0.0
 
-# Logging and monitoring
+# Logging
 structlog>=24.1.0,<25.0.0
-prometheus-fastapi-instrumentator>=6.1.0,<7.0.0
 
 # Testing
 pytest>=7.4.0,<8.0.0

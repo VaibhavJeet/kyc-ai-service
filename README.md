@@ -1,161 +1,143 @@
-# KYC AI Microservice
+# AI Service
 
-AI-powered identity verification service for TaskHub/Kamao Daily KYC processing.
+Ultra-lightweight AI microservice for TaskHub - handles Chat, Content Generation, and KYC verification.
 
-## Features
+## Resource Usage
 
-- **Face Recognition**: ArcFace/InsightFace 512-dim embeddings for accurate face matching
-- **Liveness Detection**: Multi-layer anti-spoofing (texture, frequency, color, moiré, reflection)
-- **Document OCR**: PaddleOCR for extracting text from identity documents
-- **Identity Scoring**: Unified scoring combining all verification signals
-- **Age Estimation**: Built-in age estimation for DOB cross-validation
+| Component | Disk | RAM | CPU |
+|-----------|------|-----|-----|
+| LLM (Gemma 3 270M Q4) | ~200MB | ~450MB | 1-2 cores (burst) |
+| Face Detection + Recognition | ~15MB | ~120MB | <10% |
+| OCR (Tesseract) | ~30MB | ~80MB | Moderate |
+| FastAPI + LangChain | ~80MB | ~70MB | Minimal |
+| **Total** | **~325MB** | **~720MB peak** | **2-4 cores** |
 
-## Supported Documents
+## Prerequisites
 
-- Aadhaar Card
-- PAN Card
-- Passport (with MRZ parsing)
-- Driving License
-- Voter ID
+### 1. Python 3.12
+```bash
+python --version  # Should be 3.12.x
+```
+
+### 2. Tesseract OCR
+**Windows:**
+Download from: https://github.com/UB-Mannheim/tesseract/wiki
+
+**Linux:**
+```bash
+apt-get install tesseract-ocr
+```
+
+### 3. Models (Auto-Download)
+
+Models are **automatically downloaded** on first run. You can also download manually:
+
+```bash
+# Auto-download all models
+python scripts/download_models.py
+
+# Check model status
+python scripts/download_models.py --check
+
+# Skip LLM (for testing face/OCR only)
+python scripts/download_models.py --skip-llm
+```
+
+**Models downloaded:**
+| Model | Size | Purpose |
+|-------|------|---------|
+| gemma-3-270m-it-q4_k_m.gguf | ~200MB | Chat & content generation |
+| ultra_light_face_slim.onnx | ~1MB | Face detection |
+| mobilefacenet_int8.onnx | ~4MB | Face recognition |
+| age_gender_mobilenet_int8.onnx | ~1.5MB | Age estimation |
+
+Models are stored in `models/` directory (gitignored).
+
+## Installation
+
+```bash
+# Create virtual environment
+python -m venv .venv
+
+# Activate
+# Windows:
+.\.venv\Scripts\Activate
+# Linux:
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## Configuration
+
+Copy `.env.example` to `.env` and configure:
+
+```bash
+cp .env.example .env
+```
+
+Key settings:
+- `API_KEY`: Secret key for authentication
+- `LLM_MODEL_PATH`: Path to GGUF model
+- `LLM_THREADS`: CPU threads for LLM inference
+
+## Running
+
+```bash
+# Development
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+# Production
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 2
+```
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/health` | GET | Health check |
-| `/api/v1/verify/face` | POST | Compare document and selfie faces |
-| `/api/v1/verify/liveness` | POST | Passive liveness detection |
-| `/api/v1/verify/document` | POST | Document OCR and type detection |
-| `/api/v1/verify/complete` | POST | Complete KYC verification |
-| `/api/v1/score/identity` | POST | Calculate identity score |
+### Health
+- `GET /api/v1/health` - Service health status
 
-## Deployment with Coolify
+### Chat
+- `POST /api/v1/chat` - Chat with AI
 
-### 1. Create New Service in Coolify
+### Content Generation
+- `POST /api/v1/generate/title` - Generate title from description
+- `POST /api/v1/generate/description` - Generate description from title
+- `POST /api/v1/generate/budget` - Suggest budget for task
 
-- Go to Coolify Dashboard
-- Add New Resource > Docker
-- Point to this repository
+### KYC
+- `POST /api/v1/kyc/compare-faces` - Compare selfie with document photo
+- `POST /api/v1/kyc/liveness` - Check if image is live capture
+- `POST /api/v1/kyc/ocr` - Extract text from ID document
+- `POST /api/v1/kyc/verify` - Complete KYC verification
 
-### 2. Environment Variables
+## Backend Integration
 
-Set these in Coolify:
-
+Set environment variable in your backend:
 ```env
-# Server
-HOST=0.0.0.0
-PORT=8001
-WORKERS=2
-DEBUG=false
-
-# API Security (optional)
-API_KEY=your-secure-api-key
-
-# CORS
-ALLOWED_ORIGINS=*
-
-# Model Settings
-MODEL_CACHE_DIR=/app/model_cache
-USE_GPU=false
-
-# Thresholds
-FACE_MATCH_THRESHOLD=0.45
-FACE_MATCH_HIGH_CONFIDENCE=0.55
-LIVENESS_THRESHOLD=0.7
-AGE_TOLERANCE=10
-
-# Logging
-LOG_LEVEL=INFO
+AI_SERVICE_URL=http://localhost:8001
+AI_SERVICE_API_KEY=your-secret-key
 ```
 
-### 3. Resource Limits
+## Architecture
 
-Recommended:
-- CPU: 2 cores
-- RAM: 2GB
-- Disk: 5GB (for model cache)
-
-### 4. Health Check
-
-Coolify will use the health endpoint:
 ```
-GET http://your-service:8001/api/v1/health
+ai-service/
+├── app/
+│   ├── main.py           # FastAPI app
+│   ├── core/
+│   │   └── config.py     # Settings
+│   ├── api/
+│   │   ├── routes.py     # API endpoints
+│   │   └── schemas.py    # Pydantic models
+│   ├── services/
+│   │   ├── llm_service.py    # Gemma 3 via llama.cpp
+│   │   ├── face_service.py   # Face detection/recognition
+│   │   └── ocr_service.py    # Tesseract OCR
+│   └── agents/
+│       ├── router.py     # Intent routing
+│       └── tools.py      # LangChain tools
+├── models/               # Downloaded models (gitignored)
+├── requirements.txt
+└── .env
 ```
-
-## Connect from Backend
-
-In your NestJS backend, set the environment variable:
-
-```env
-KYC_AI_SERVICE_URL=http://kyc-ai-service:8001
-KYC_AI_API_KEY=your-secure-api-key
-```
-
-If running on same VPS with Coolify, use the internal Docker network hostname.
-
-## Local Development
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run server
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
-```
-
-## Docker Build
-
-```bash
-# Build
-docker build -t kyc-ai-service .
-
-# Run
-docker run -p 8001:8001 -e API_KEY=your-key kyc-ai-service
-```
-
-## API Examples
-
-### Complete Verification
-
-```bash
-curl -X POST http://localhost:8001/api/v1/verify/complete \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key" \
-  -d '{
-    "document_image": "base64...",
-    "selfie_image": "base64...",
-    "expected_document_type": "aadhaar",
-    "dob": "1990-01-15"
-  }'
-```
-
-### Response
-
-```json
-{
-  "score": 87.5,
-  "decision": "auto_verified",
-  "confidence": "high",
-  "breakdown": {
-    "face_match": 92.0,
-    "liveness": 88.0,
-    "document": 85.0,
-    "age_consistency": 100.0,
-    "uniqueness": 100.0,
-    "risk": 95.0
-  },
-  "face_similarity": 0.92,
-  "is_face_match": true,
-  "is_live": true,
-  "estimated_age": 34,
-  "embedding_hash": "a1b2c3...",
-  "fuzzy_hashes": ["L0_abc...", "L1_def...", "L2_ghi...", "L3_jkl..."]
-}
-```
-
-## Privacy
-
-- No images are stored
-- Only privacy-preserving hashes used for deduplication
-- All processing happens in-memory
-- Complies with DPDP Act 2023 (India)

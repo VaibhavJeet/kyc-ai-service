@@ -1,48 +1,41 @@
-# Git
-.git
-.gitignore
-
 # Python
-__pycache__
+__pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-.env
-.venv
-env/
+build/
+dist/
+*.egg-info/
+
+# Virtual Environment
+.venv/
 venv/
 ENV/
-.eggs
-*.egg-info/
-*.egg
 
 # IDE
 .idea/
 .vscode/
 *.swp
-*.swo
+
+# Environment
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
-.tox/
-.nox/
 
 # Documentation
-docs/
 *.md
 !README.md
 
-# Model cache (downloaded at runtime)
-model_cache/
-*.onnx
-*.pth
-*.pt
-
-# Misc
-.DS_Store
-*.log
-tmp/
-temp/
+# Large model files (mount as volume instead)
+# Uncomment if you want to exclude models from build
+# models/*.gguf
+# models/*.onnx
