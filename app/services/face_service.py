@@ -209,13 +209,79 @@ class FaceService:
 
         # Cosine similarity
         similarity = float(np.dot(emb1, emb2))
-
+        
         return {
             "match": similarity >= self.settings.face_match_threshold,
             "similarity": similarity,
             "threshold": self.settings.face_match_threshold,
             "face1": {"box": box1, "confidence": faces1[0]["confidence"]},
             "face2": {"box": box2, "confidence": faces2[0]["confidence"]}
+        }
+
+    async def compare_faces_with_age(
+        self,
+        image1: np.ndarray,
+        image2: np.ndarray
+    ) -> Dict[str, Any]:
+        """
+        Compare faces with age adjustment.
+        If age gap > 10 years, applies a bonus to the similarity score.
+        """
+        # Base comparison to get faces and embeddings
+        base_result = await self.compare_faces(image1, image2)
+        
+        if "error" in base_result:
+            return base_result
+
+        # Extract faces again (inefficient, but reuses existing flow safely)
+        # In a real optimization, we'd refactor to return crops
+        faces1 = await self.detect_faces(image1)
+        faces2 = await self.detect_faces(image2)
+        
+        box1 = faces1[0]["box"]
+        face1 = image1[box1[1]:box1[3], box1[0]:box1[2]]
+
+        box2 = faces2[0]["box"]
+        face2 = image2[box2[1]:box2[3], box2[0]:box2[2]]
+
+        # Estimate ages
+        age_gender1 = await self.estimate_age_gender(face1)
+        age_gender2 = await self.estimate_age_gender(face2)
+        
+        age1 = age_gender1.get("age")
+        age2 = age_gender2.get("age")
+        
+        adjusted_similarity = base_result["similarity"]
+        age_gap = 0
+        bonus = 0.0
+
+        if age1 is not None and age2 is not None:
+            age_gap = abs(age1 - age2)
+            
+            # Logic: If age gap > 10 years, apply relaxed threshold (bonus)
+            if age_gap > 10:
+                # 10-20 years: small bonus, 20+ years: larger bonus
+                # Cap bonus to avoid false positives
+                if age_gap <= 20:
+                    bonus = 0.05
+                else:
+                    bonus = 0.10
+                
+                adjusted_similarity = min(1.0, adjusted_similarity + bonus)
+
+        # Recalculate match with adjusted similarity
+        is_match = adjusted_similarity >= self.settings.face_match_threshold
+
+        return {
+            "match": is_match,
+            "similarity": adjusted_similarity,
+            "original_similarity": base_result["similarity"],
+            "age_gap": age_gap,
+            "age1": age1,
+            "age2": age2,
+            "bonus_applied": bonus,
+            "threshold": self.settings.face_match_threshold,
+            "details": "Age-adjusted matching applied" if bonus > 0 else "Standard matching"
         }
 
     async def estimate_age_gender(self, face_img: np.ndarray) -> Dict[str, Any]:
