@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     llm_context_size: int = 2048  # Small context for memory efficiency
     llm_max_tokens: int = 512
     llm_temperature: float = 0.7
-    llm_threads: int = 4  # CPU threads for inference
+    llm_threads: int = 8  # CPU threads for inference (increased from 4 for better performance)
 
     # Face Detection - Ultra-Light Face Detector (~1-2MB, ~30-50MB RAM)
     face_detector_model: str = "./models/ultra_light_face_slim.onnx"

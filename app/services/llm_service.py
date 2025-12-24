@@ -5,11 +5,17 @@ Uses Gemma 3 270M Q4 via llama-cpp-python
 """
 
 import structlog
-from typing import Optional, Dict, Any, List
+import hashlib
+import time
+from typing import Optional, Dict, Any, List, Tuple
 from llama_cpp import Llama
 from app.core.config import get_settings
 
 logger = structlog.get_logger(__name__)
+
+# Simple in-memory cache for budget suggestions (TTL: 1 hour)
+_budget_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+CACHE_TTL_SECONDS = 3600  # 1 hour
 
 
 class LLMService:
@@ -121,7 +127,26 @@ Description:"""
         category: str = "",
         currency: str = "INR"
     ) -> Dict[str, Any]:
-        """Suggest a budget range for a task"""
+        """Suggest a budget range for a task with caching"""
+        global _budget_cache
+
+        # Create cache key from normalized inputs
+        cache_key = hashlib.md5(
+            f"{title.lower().strip()}:{description.lower().strip()[:100]}:{category.lower()}:{currency}".encode()
+        ).hexdigest()
+
+        # Check cache
+        if cache_key in _budget_cache:
+            cached_result, cached_time = _budget_cache[cache_key]
+            if time.time() - cached_time < CACHE_TTL_SECONDS:
+                logger.info("Budget cache hit", cache_key=cache_key[:8])
+                return cached_result
+            else:
+                # Expired, remove from cache
+                del _budget_cache[cache_key]
+
+        logger.info("Budget cache miss, calling LLM", cache_key=cache_key[:8])
+
         prompt = f"""Estimate a fair budget range for this task in {currency}.
 
 Title: {title}
@@ -135,18 +160,26 @@ Budget:"""
         response = await self.generate(prompt, max_tokens=50, temperature=0.3)
 
         # Parse JSON response
+        result = {"min": 500, "max": 5000, "recommended": 1500}  # Default fallback
         try:
             import json
             # Find JSON in response
             start = response.find("{")
             end = response.rfind("}") + 1
             if start >= 0 and end > start:
-                return json.loads(response[start:end])
+                result = json.loads(response[start:end])
         except:
             pass
 
-        # Fallback default
-        return {"min": 500, "max": 5000, "recommended": 1500}
+        # Cache the result
+        _budget_cache[cache_key] = (result, time.time())
+
+        # Limit cache size to prevent memory issues (keep last 100 entries)
+        if len(_budget_cache) > 100:
+            oldest_key = min(_budget_cache.keys(), key=lambda k: _budget_cache[k][1])
+            del _budget_cache[oldest_key]
+
+        return result
 
     def unload(self):
         """Unload model to free memory"""
