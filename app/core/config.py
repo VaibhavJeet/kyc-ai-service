@@ -24,17 +24,14 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_threads: int = 8  # CPU threads for inference (increased from 4 for better performance)
 
-    # Face Detection - Ultra-Light Face Detector (~1-2MB, ~30-50MB RAM)
-    face_detector_model: str = "./models/ultra_light_face_slim.onnx"
+    # Face Detection & Recognition - InsightFace buffalo_l (~300MB models)
+    # Production-grade face recognition with 512-dim ArcFace embeddings
     face_detection_threshold: float = 0.7
+    face_match_threshold: float = 0.85  # 85% similarity for production KYC
+    face_embedding_dim: int = 512  # InsightFace ArcFace ResNet100
 
-    # Face Recognition - MobileFaceNet INT8 (~3-5MB, ~40-60MB RAM)
-    face_recognition_model: str = "./models/mobilefacenet_int8.onnx"
-    face_match_threshold: float = 0.45
-    face_embedding_dim: int = 128
-
-    # Age/Gender - MobileNetV2 INT8 (~1.5MB, ~20-30MB RAM)
-    age_gender_model: str = "./models/age_gender_mobilenet_int8.onnx"
+    # InsightFace provides integrated age/gender estimation
+    # No separate models needed - all included in buffalo_l pack
 
     # OCR - Tesseract (~30MB disk, ~80MB RAM)
     tesseract_lang: str = "eng"

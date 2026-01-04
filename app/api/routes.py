@@ -92,7 +92,7 @@ async def health_check():
         ServiceStatus(
             name="face",
             available=face.is_available(),
-            details="Ultra-Light Face Detector + MobileFaceNet"
+            details="InsightFace buffalo_l ArcFace ResNet100 (512-dim)"
         ),
         ServiceStatus(
             name="ocr",

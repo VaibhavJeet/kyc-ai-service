@@ -38,16 +38,13 @@ logger = structlog.get_logger(__name__)
 
 
 async def check_and_download_models():
-    """Check for models and download if missing."""
+    """Check for LLM model and download if missing. InsightFace downloads automatically."""
     settings = get_settings()
     models_dir = Path(settings.model_cache_dir)
 
-    # Required models
+    # Required models - InsightFace buffalo_l downloads automatically at runtime
     required_models = [
         "gemma-3-270m-it-q4_k_m.gguf",
-        "ultra_light_face_slim.onnx",
-        "mobilefacenet_int8.onnx",
-        "age_gender_mobilenet_int8.onnx",
     ]
 
     missing = [m for m in required_models if not (models_dir / m).exists()]
@@ -64,7 +61,7 @@ async def check_and_download_models():
         except Exception as e:
             logger.warning(f"Auto-download failed: {e}. Run 'python scripts/download_models.py' manually.")
     else:
-        logger.info("All models present")
+        logger.info("LLM model present. InsightFace will download automatically.")
 
 
 @asynccontextmanager
