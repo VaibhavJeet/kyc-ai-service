@@ -20,13 +20,9 @@ llama-cpp-python>=0.2.90,<1.0.0
 langchain>=0.3.0,<1.0.0
 langchain-core>=0.3.0,<1.0.0
 
-# ONNX Runtime - lightweight inference for face models (~20MB)
-onnxruntime>=1.16.0,<2.0.0
-
 # Image processing - minimal dependencies
 numpy>=1.26.0,<2.0.0
 scipy>=1.11.0,<2.0.0
-opencv-python-headless>=4.9.0,<5.0.0
 Pillow>=10.2.0,<11.0.0
 
 # OCR - Tesseract (C++ based, ~30MB, ~80MB RAM)
@@ -45,6 +41,7 @@ pytest>=7.4.0,<8.0.0
 pytest-asyncio>=0.23.0,<1.0.0
 
 # InsightFace for Production-Grade KYC (Added Jan 2026)
+# Uses specific versions for production stability
 insightface==0.7.3
 onnxruntime==1.20.1
 opencv-python-headless==4.10.0.84
