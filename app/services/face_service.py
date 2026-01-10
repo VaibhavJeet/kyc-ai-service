@@ -7,10 +7,13 @@ Uses InsightFace with ArcFace ResNet100:
 - State-of-the-art accuracy for sibling/twin detection
 """
 
+import asyncio
 import cv2
 import numpy as np
 import structlog
+import traceback
 from typing import Optional, Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor
 import insightface
 from insightface.app import FaceAnalysis
 from app.core.config import get_settings
@@ -25,49 +28,105 @@ class FaceService:
         self.settings = get_settings()
         self.face_app: Optional[FaceAnalysis] = None
         self._initialized = False
+        # Thread pool for CPU-bound operations (Issue #8)
+        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="face_worker")
 
-    async def initialize(self) -> bool:
-        """Initialize InsightFace models"""
+    async def initialize(self, max_retries: int = 3) -> bool:
+        """
+        Initialize InsightFace models with retry logic
+        Fixes Issue #2: Better error handling and retry logic
+        """
         if self._initialized:
             return True
 
-        try:
-            # Initialize InsightFace with buffalo_l model pack
-            # buffalo_l provides: detection + recognition + age/gender
-            logger.info("Initializing InsightFace buffalo_l model pack...")
+        for attempt in range(max_retries):
+            try:
+                logger.info(
+                    "insightface.initializing",
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    model="buffalo_l"
+                )
 
-            self.face_app = FaceAnalysis(
-                name='buffalo_l',
-                providers=['CPUExecutionProvider']
-            )
+                self.face_app = FaceAnalysis(
+                    name='buffalo_l',
+                    providers=['CPUExecutionProvider']
+                )
 
-            # Prepare models with 640x640 detection size for better accuracy
-            self.face_app.prepare(ctx_id=0, det_size=(640, 640))
+                # Prepare models with 640x640 detection size for better accuracy
+                self.face_app.prepare(ctx_id=0, det_size=(640, 640))
 
-            self._initialized = True
-            logger.info("InsightFace initialized successfully",
-                       model="buffalo_l",
-                       embedding_dim=512,
-                       detection_size="640x640")
-            return True
+                self._initialized = True
+                logger.info(
+                    "insightface.initialized",
+                    model="buffalo_l",
+                    embedding_dim=512,
+                    detection_size="640x640",
+                    attempt=attempt + 1
+                )
+                return True
 
-        except Exception as e:
-            logger.error("Failed to initialize InsightFace", error=str(e))
-            self._initialized = False
-            return False
+            except FileNotFoundError as e:
+                logger.error(
+                    "insightface.model_not_found",
+                    error_type="FileNotFoundError",
+                    error_message=str(e),
+                    advice="Model files missing - cannot recover"
+                )
+                return False  # Fatal - don't retry
+
+            except (ConnectionError, TimeoutError) as e:
+                logger.warning(
+                    "insightface.network_error",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    attempt=attempt + 1,
+                    max_retries=max_retries
+                )
+                if attempt < max_retries - 1:
+                    backoff_seconds = 2 ** attempt
+                    logger.info("insightface.retry_backoff", seconds=backoff_seconds)
+                    await asyncio.sleep(backoff_seconds)
+                continue
+
+            except Exception as e:
+                logger.error(
+                    "insightface.init_failed",
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    traceback=traceback.format_exc()
+                )
+                return False
+
+        logger.error(
+            "insightface.init_exhausted",
+            max_retries=max_retries,
+            status="Failed to initialize after all retries"
+        )
+        self._initialized = False
+        return False
 
     def is_available(self) -> bool:
         """Check if face service is available"""
         return self._initialized
 
     async def detect_faces(self, image: np.ndarray) -> List[Dict[str, Any]]:
-        """Detect faces in image using InsightFace"""
+        """
+        Detect faces in image using InsightFace
+        Fixes Issue #8: Runs in thread pool to avoid blocking event loop
+        Fixes Issue #3: Stores face objects for reuse
+        """
         if not self.face_app:
             return []
 
         try:
-            # InsightFace expects BGR format (OpenCV default)
-            faces = self.face_app.get(image)
+            # Run CPU-intensive face detection in thread pool (Issue #8)
+            loop = asyncio.get_event_loop()
+            faces = await loop.run_in_executor(
+                self.executor,
+                self.face_app.get,
+                image
+            )
 
             results = []
             for face in faces:
@@ -85,65 +144,45 @@ class FaceService:
                         "confidence": det_score,
                         "width": x2 - x1,
                         "height": y2 - y1,
-                        "landmarks": face.kps.tolist() if hasattr(face, 'kps') else None
+                        "landmarks": face.kps.tolist() if hasattr(face, 'kps') else None,
+                        "_face_obj": face  # Store for reuse (Issue #3)
                     })
 
             return results
 
         except Exception as e:
-            logger.error("Face detection failed", error=str(e))
+            logger.error(
+                "face.detection_failed",
+                error_type=type(e).__name__,
+                error_message=str(e)
+            )
             return []
 
-    async def get_embedding(self, image: np.ndarray, bbox: Optional[List[int]] = None) -> Optional[np.ndarray]:
+    async def get_embedding(self, face_obj) -> Optional[np.ndarray]:
         """
-        Get 512-dimensional face embedding using InsightFace ArcFace
+        Get 512-dimensional face embedding from face object
+        Fixes Issue #3: Reuses detected face instead of re-detecting
 
         Args:
-            image: Input image in BGR format
-            bbox: Optional bounding box [x1, y1, x2, y2]. If None, will detect face.
+            face_obj: InsightFace face object from detect_faces
 
         Returns:
             512-dimensional normalized embedding or None
         """
-        if not self.face_app:
+        if not self.face_app or face_obj is None:
             return None
 
         try:
-            faces = self.face_app.get(image)
-
-            if not faces:
-                return None
-
-            # If bbox provided, find closest matching face
-            if bbox:
-                x1, y1, x2, y2 = bbox
-                center_x = (x1 + x2) / 2
-                center_y = (y1 + y2) / 2
-
-                # Find face with center closest to bbox center
-                min_dist = float('inf')
-                best_face = faces[0]
-
-                for face in faces:
-                    fx1, fy1, fx2, fy2 = face.bbox.astype(int)
-                    fcenter_x = (fx1 + fx2) / 2
-                    fcenter_y = (fy1 + fy2) / 2
-                    dist = ((fcenter_x - center_x) ** 2 + (fcenter_y - center_y) ** 2) ** 0.5
-
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_face = face
-
-                embedding = best_face.normed_embedding
-            else:
-                # Use first detected face
-                embedding = faces[0].normed_embedding
-
-            # InsightFace already returns normalized 512-dim embedding
+            # InsightFace face objects already contain normalized embeddings
+            embedding = face_obj.normed_embedding
             return embedding.astype(np.float32)
 
         except Exception as e:
-            logger.error("Embedding extraction failed", error=str(e))
+            logger.error(
+                "face.embedding_failed",
+                error_type=type(e).__name__,
+                error_message=str(e)
+            )
             return None
 
     async def compare_faces(
@@ -153,108 +192,103 @@ class FaceService:
     ) -> Dict[str, Any]:
         """
         Compare two face images using InsightFace 512-dim embeddings
+        Fixes Issue #3: Single detection pass, no double detection
 
         Production threshold: 85% similarity for same person
-        This threshold effectively rejects siblings/twins while accepting same person
         """
-        # Detect faces in both images
+        # Detect faces in both images (single pass each)
         faces1 = await self.detect_faces(image1)
         faces2 = await self.detect_faces(image2)
 
         if not faces1:
-            return {"match": False, "error": "No face detected in first image", "similarity": 0.0}
+            return {
+                "match": False,
+                "error": "No face detected in first image",
+                "similarity": 0.0,
+                "success": False
+            }
         if not faces2:
-            return {"match": False, "error": "No face detected in second image", "similarity": 0.0}
+            return {
+                "match": False,
+                "error": "No face detected in second image",
+                "similarity": 0.0,
+                "success": False
+            }
 
-        # Get embeddings for detected faces
-        box1 = faces1[0]["box"]
-        box2 = faces2[0]["box"]
+        # Get embeddings from detected faces (reuse face objects)
+        face1_obj = faces1[0]["_face_obj"]
+        face2_obj = faces2[0]["_face_obj"]
 
-        emb1 = await self.get_embedding(image1, box1)
-        emb2 = await self.get_embedding(image2, box2)
+        emb1 = await self.get_embedding(face1_obj)
+        emb2 = await self.get_embedding(face2_obj)
 
         if emb1 is None or emb2 is None:
-            return {"match": False, "error": "Failed to generate embeddings", "similarity": 0.0}
+            return {
+                "match": False,
+                "error": "Failed to generate embeddings",
+                "similarity": 0.0,
+                "success": False
+            }
 
         # Compute cosine similarity (embeddings are already normalized)
         similarity = float(np.dot(emb1, emb2))
 
+        # Extract age/gender for recommendation logic
+        age1 = int(face1_obj.age) if hasattr(face1_obj, 'age') else None
+        age2 = int(face2_obj.age) if hasattr(face2_obj, 'age') else None
+        gender1 = "male" if (hasattr(face1_obj, 'gender') and face1_obj.gender == 1) else "female" if hasattr(face1_obj, 'gender') else None
+        gender2 = "male" if (hasattr(face2_obj, 'gender') and face2_obj.gender == 1) else "female" if hasattr(face2_obj, 'gender') else None
+
+        age_difference = abs(age1 - age2) if (age1 and age2) else None
+        gender_match = (gender1 == gender2) if (gender1 and gender2) else None
+
+        # Determine recommendation (no age adjustment - Issue #4 removed)
+        threshold = self.settings.face_match_threshold
+        is_match = similarity >= threshold
+
+        if similarity >= 0.90:
+            recommendation = "AUTO_VERIFY"
+            confidence = "high"
+        elif similarity >= threshold:
+            recommendation = "AUTO_VERIFY"
+            confidence = "medium"
+        elif similarity >= (threshold - 0.05):
+            recommendation = "MANUAL_REVIEW"
+            confidence = "medium"
+        else:
+            recommendation = "REJECT"
+            confidence = "low"
+
+        # Clean up internal face objects before returning
+        for face in faces1 + faces2:
+            if "_face_obj" in face:
+                del face["_face_obj"]
+
         return {
-            "match": similarity >= self.settings.face_match_threshold,
+            "match": is_match,
             "similarity": similarity,
-            "threshold": self.settings.face_match_threshold,
+            "threshold": threshold,
             "embedding_dim": 512,
             "model": "InsightFace ArcFace ResNet100",
-            "face1": {"box": box1, "confidence": faces1[0]["confidence"]},
-            "face2": {"box": box2, "confidence": faces2[0]["confidence"]}
-        }
-
-    async def compare_faces_with_age(
-        self,
-        image1: np.ndarray,
-        image2: np.ndarray
-    ) -> Dict[str, Any]:
-        """
-        Compare faces with age adjustment using InsightFace
-
-        InsightFace's 512-dim ArcFace embeddings are robust to aging,
-        but we can still apply age-based adjustments for edge cases.
-        """
-        # Base comparison using InsightFace embeddings
-        base_result = await self.compare_faces(image1, image2)
-
-        if "error" in base_result:
-            return base_result
-
-        # Get faces with age/gender info
-        try:
-            faces1 = self.face_app.get(image1)
-            faces2 = self.face_app.get(image2)
-
-            if not faces1 or not faces2:
-                return base_result
-
-            # InsightFace provides age estimation
-            age1 = int(faces1[0].age) if hasattr(faces1[0], 'age') else None
-            age2 = int(faces2[0].age) if hasattr(faces2[0], 'age') else None
-
-            adjusted_similarity = base_result["similarity"]
-            age_gap = 0
-            bonus = 0.0
-
-            if age1 is not None and age2 is not None:
-                age_gap = abs(age1 - age2)
-
-                # Age-based adjustment (conservative)
-                # InsightFace is already robust, so apply minimal bonus
-                if age_gap > 15:
-                    if age_gap <= 25:
-                        bonus = 0.02  # 2% bonus for 15-25 year gap
-                    else:
-                        bonus = 0.03  # 3% bonus for 25+ year gap
-
-                    adjusted_similarity = min(1.0, adjusted_similarity + bonus)
-
-            # Recalculate match with adjusted similarity
-            is_match = adjusted_similarity >= self.settings.face_match_threshold
-
-            return {
-                "match": is_match,
-                "similarity": adjusted_similarity,
-                "original_similarity": base_result["similarity"],
-                "age_gap": age_gap,
-                "age1": age1,
-                "age2": age2,
-                "bonus_applied": bonus,
-                "threshold": self.settings.face_match_threshold,
-                "embedding_dim": 512,
-                "model": "InsightFace ArcFace ResNet100",
-                "details": "Age-adjusted matching applied" if bonus > 0 else "Standard matching"
+            "success": True,
+            # Additional fields for KYC decision making
+            "recommendation": recommendation,
+            "confidence": confidence,
+            "gender_match": gender_match,
+            "age_difference": age_difference,
+            "age1": age1,
+            "age2": age2,
+            "gender1": gender1,
+            "gender2": gender2,
+            "face1": {
+                "box": faces1[0]["box"],
+                "confidence": faces1[0]["confidence"]
+            },
+            "face2": {
+                "box": faces2[0]["box"],
+                "confidence": faces2[0]["confidence"]
             }
-
-        except Exception as e:
-            logger.error("Age-based comparison failed, using base result", error=str(e))
-            return base_result
+        }
 
     async def estimate_age_gender(self, face_img: np.ndarray) -> Dict[str, Any]:
         """Estimate age and gender using InsightFace"""
@@ -262,7 +296,13 @@ class FaceService:
             return {"age": None, "gender": None, "error": "InsightFace not initialized"}
 
         try:
-            faces = self.face_app.get(face_img)
+            # Run in thread pool (Issue #8)
+            loop = asyncio.get_event_loop()
+            faces = await loop.run_in_executor(
+                self.executor,
+                self.face_app.get,
+                face_img
+            )
 
             if not faces:
                 return {"age": None, "gender": None, "error": "No face detected"}
@@ -272,10 +312,9 @@ class FaceService:
             # Extract age and gender from InsightFace
             age = int(face.age) if hasattr(face, 'age') else None
 
-            # Gender: InsightFace returns 0 for female, 1 for male
             if hasattr(face, 'gender'):
                 gender = "male" if face.gender == 1 else "female"
-                gender_confidence = 0.9  # InsightFace has high confidence
+                gender_confidence = 0.9
             else:
                 gender = None
                 gender_confidence = 0.0
@@ -287,13 +326,17 @@ class FaceService:
             }
 
         except Exception as e:
-            logger.error("Age/gender estimation failed", error=str(e))
+            logger.error(
+                "face.age_gender_failed",
+                error_type=type(e).__name__,
+                error_message=str(e)
+            )
             return {"age": None, "gender": None, "error": str(e)}
 
     async def check_liveness(self, image: np.ndarray) -> Dict[str, Any]:
         """
         Basic liveness check using image analysis
-        InsightFace provides quality scores we can leverage
+        Fixes Issue #7: Uses config values instead of magic numbers
         """
         faces = await self.detect_faces(image)
 
@@ -304,19 +347,19 @@ class FaceService:
         box = face["box"]
         face_img = image[box[1]:box[3], box[0]:box[2]]
 
-        # Basic quality checks
+        # Basic quality checks using config thresholds
         scores = []
 
         # 1. Blur detection (live faces are sharper)
         gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
         laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        blur_score = min(laplacian_var / 500.0, 1.0)
+        blur_score = min(laplacian_var / (self.settings.liveness_min_blur_variance * 10), 1.0)
         scores.append(blur_score)
 
-        # 2. Color variance (real faces have natural color distribution)
+        # 2. Color saturation (real faces have natural color)
         hsv = cv2.cvtColor(face_img, cv2.COLOR_BGR2HSV)
         saturation = hsv[:, :, 1].mean() / 255.0
-        color_score = min(saturation * 2, 1.0)
+        color_score = min(saturation / self.settings.liveness_min_saturation, 1.0) if self.settings.liveness_min_saturation > 0 else 1.0
         scores.append(color_score)
 
         # 3. Face size relative to image
@@ -324,7 +367,12 @@ class FaceService:
         face_area = (box[2] - box[0]) * (box[3] - box[1])
         img_area = img_h * img_w
         size_ratio = face_area / img_area
-        size_score = 1.0 if 0.1 < size_ratio < 0.8 else 0.5
+
+        # Use config thresholds (Issue #7)
+        if self.settings.liveness_min_face_ratio < size_ratio < self.settings.liveness_max_face_ratio:
+            size_score = 1.0
+        else:
+            size_score = 0.5
         scores.append(size_score)
 
         # 4. Detection confidence from InsightFace
@@ -334,6 +382,10 @@ class FaceService:
         # Combined score
         final_score = sum(scores) / len(scores)
         is_live = final_score >= self.settings.liveness_threshold
+
+        # Clean up internal face object
+        if "_face_obj" in face:
+            del face["_face_obj"]
 
         return {
             "is_live": is_live,
@@ -352,7 +404,8 @@ class FaceService:
         """Unload models to free memory"""
         self.face_app = None
         self._initialized = False
-        logger.info("InsightFace models unloaded")
+        self.executor.shutdown(wait=False)
+        logger.info("insightface.unloaded", status="Models and thread pool cleaned up")
 
 
 # Singleton instance
