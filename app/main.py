@@ -12,6 +12,9 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import get_settings
 from app.api.routes import router
@@ -109,13 +112,33 @@ app = FastAPI(
     redoc_url="/redoc" if settings.debug else None,
 )
 
-# CORS middleware
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS configuration - restrict to specific origins
+allowed_origins = [
+    "https://kamaodaily.com",
+    "https://app.kamaodaily.com",
+    "https://admin.kamaodaily.com",
+]
+
+# Add localhost origins in debug mode
+if settings.debug:
+    allowed_origins.extend([
+        "http://localhost:3000",
+        "http://localhost:4200",
+        "http://127.0.0.1:3000",
+    ])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Include routes

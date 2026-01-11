@@ -7,8 +7,13 @@ import base64
 import cv2
 import numpy as np
 import structlog
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Header
+import time
+import secrets
+import hashlib
+import asyncio
+from typing import Optional, Dict, List
+from functools import lru_cache
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 
 from app.core.config import get_settings, Settings
 from app.services.llm_service import get_llm_service, LLMService
@@ -46,32 +51,176 @@ def get_api_key(x_api_key: Optional[str] = Header(None)) -> Optional[str]:
     return x_api_key
 
 
+# Rate limiting storage for failed auth attempts
+_failed_auth_attempts: Dict[str, List[float]] = {}
+MAX_AUTH_ATTEMPTS = 5
+AUTH_ATTEMPT_WINDOW = 300  # 5 minutes
+
+
+@lru_cache(maxsize=1000)
+def hash_key(key: str) -> str:
+    """Hash API key using SHA256 for constant-time comparison"""
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()
+
+
+async def check_rate_limit(ip: str) -> bool:
+    """Check if IP has exceeded auth rate limit"""
+    now = time.time()
+
+    if ip not in _failed_auth_attempts:
+        _failed_auth_attempts[ip] = []
+
+    # Remove old attempts outside the time window
+    _failed_auth_attempts[ip] = [
+        timestamp for timestamp in _failed_auth_attempts[ip]
+        if now - timestamp < AUTH_ATTEMPT_WINDOW
+    ]
+
+    # Check if limit exceeded
+    return len(_failed_auth_attempts[ip]) >= MAX_AUTH_ATTEMPTS
+
+
+def record_failed_auth(ip: str):
+    """Record failed authentication attempt"""
+    if ip not in _failed_auth_attempts:
+        _failed_auth_attempts[ip] = []
+    _failed_auth_attempts[ip].append(time.time())
+
+
 async def verify_api_key(
+    request: Request,
     api_key: Optional[str] = Depends(get_api_key),
     settings: Settings = Depends(get_settings)
 ):
-    """Verify API key if configured"""
-    if settings.api_key and settings.api_key != api_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    """
+    Verify API key with constant-time comparison and rate limiting.
+    Prevents timing attacks and brute force attempts.
+    """
+    client_ip = request.client.host
+
+    # Check rate limit
+    if await check_rate_limit(client_ip):
+        logger.warning(
+            "Rate limit exceeded for API key authentication",
+            ip=client_ip,
+            attempts=len(_failed_auth_attempts.get(client_ip, []))
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many authentication attempts. Try again later."
+        )
+
+    # Require API key to be configured
+    if not settings.api_key or settings.api_key == "":
+        logger.error("API key not configured in settings")
+        raise HTTPException(
+            status_code=500,
+            detail="Authentication not configured"
+        )
+
+    # Require API key in request
+    if not api_key or api_key == "":
+        record_failed_auth(client_ip)
+        logger.warning("Missing API key in request", ip=client_ip)
+        await asyncio.sleep(1)  # Rate limit failed attempts
+        raise HTTPException(
+            status_code=401,
+            detail="API key required"
+        )
+
+    # Constant-time comparison to prevent timing attacks
+    expected_hash = hash_key(settings.api_key)
+    provided_hash = hash_key(api_key)
+
+    if not secrets.compare_digest(expected_hash, provided_hash):
+        record_failed_auth(client_ip)
+        logger.warning(
+            "Invalid API key attempt",
+            ip=client_ip,
+            attempts=len(_failed_auth_attempts.get(client_ip, []))
+        )
+        await asyncio.sleep(1)  # Prevent timing attacks
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+
+    # Clear failed attempts on successful authentication
+    if client_ip in _failed_auth_attempts:
+        _failed_auth_attempts[client_ip] = []
+
+
+# Image validation constants
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_IMAGE_DIMENSION = 4096  # 4K resolution max
+MIN_IMAGE_DIMENSION = 100  # Minimum size
+
+
+def validate_base64_size(base64_str: str) -> None:
+    """Validate base64 string size before decoding"""
+    # Base64 encoding increases size by ~37%
+    max_encoded_size = int(MAX_IMAGE_SIZE * 1.37)
+    if len(base64_str) > max_encoded_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Image too large. Maximum size: {MAX_IMAGE_SIZE / (1024*1024):.0f}MB"
+        )
 
 
 def decode_base64_image(base64_str: str) -> np.ndarray:
-    """Decode base64 string to numpy array image"""
+    """Decode base64 string to numpy array image with validation"""
     try:
         # Remove data URL prefix if present
         if "," in base64_str:
             base64_str = base64_str.split(",")[1]
 
+        # Validate encoded size
+        validate_base64_size(base64_str)
+
+        # Decode
         img_bytes = base64.b64decode(base64_str)
+
+        # Validate decoded size
+        if len(img_bytes) > MAX_IMAGE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Decoded image exceeds {MAX_IMAGE_SIZE / (1024*1024):.0f}MB limit"
+            )
+
+        # Convert to numpy array
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if img is None:
-            raise ValueError("Failed to decode image")
+            raise ValueError("Failed to decode image. Invalid format.")
+
+        # Validate dimensions
+        height, width = img.shape[:2]
+        if height < MIN_IMAGE_DIMENSION or width < MIN_IMAGE_DIMENSION:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image too small. Minimum dimensions: {MIN_IMAGE_DIMENSION}x{MIN_IMAGE_DIMENSION}px"
+            )
+
+        if height > MAX_IMAGE_DIMENSION or width > MAX_IMAGE_DIMENSION:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Image too large. Maximum dimensions: {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION}px"
+            )
+
+        # Validate image has content
+        if img.size == 0:
+            raise ValueError("Empty image")
 
         return img
+
+    except base64.binascii.Error as e:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 encoding: {str(e)}")
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+        logger.error(f"Image decode error: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to process image")
 
 
 # ============= Health Check =============
