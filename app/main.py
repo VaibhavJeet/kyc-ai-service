@@ -117,19 +117,29 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS configuration - restrict to specific origins
+# CORS configuration - IMPORTANT: Allow both frontend AND backend origins
+# Backend-to-backend communication requires NestJS backend in allowed origins
 allowed_origins = [
+    # Frontend origins
     "https://kamaodaily.com",
     "https://app.kamaodaily.com",
     "https://admin.kamaodaily.com",
+
+    # Backend origin (for KYC service-to-service calls)
+    "https://api.kamaodaily.com",
+
+    # Docker internal network (if using Docker Compose)
+    "http://taskhub-backend:3000",
 ]
 
 # Add localhost origins in debug mode
 if settings.debug:
     allowed_origins.extend([
         "http://localhost:3000",
+        "http://localhost:3001",  # NestJS backend dev port
         "http://localhost:4200",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
     ])
 
 app.add_middleware(
