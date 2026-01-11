@@ -120,13 +120,13 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # CORS configuration - IMPORTANT: Allow both frontend AND backend origins
 # Backend-to-backend communication requires NestJS backend in allowed origins
 allowed_origins = [
-    # Frontend origins
+    # Frontend origins (actual domains you own)
     "https://kamaodaily.com",
-    "https://app.kamaodaily.com",
-    "https://admin.kamaodaily.com",
+    "https://www.kamaodaily.com",  # www subdomain
 
-    # Backend origin (for KYC service-to-service calls)
+    # Backend origins (for KYC service-to-service calls)
     "https://api.kamaodaily.com",
+    "https://staging-api.kamaodaily.com",  # Staging backend
 
     # Docker internal network (if using Docker Compose)
     "http://taskhub-backend:3000",
