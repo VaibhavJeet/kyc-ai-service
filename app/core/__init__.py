@@ -1,3 +1,4 @@
-from .config import Settings, get_settings
+# TrustVault Core Business Logic
+from .trust.score import TrustScoreEngine
 
-__all__ = ["Settings", "get_settings"]
+__all__ = ["TrustScoreEngine"]

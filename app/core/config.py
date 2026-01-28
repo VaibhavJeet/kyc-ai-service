@@ -1,9 +1,10 @@
 """
-Configuration for AI Service
-Ultra-lightweight settings - Sub-1GB RAM, Sub-350MB disk
+TrustVault Configuration
+Universal Trust Verification Platform
 """
 
 import os
+from typing import List, Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
@@ -15,21 +16,34 @@ logger = structlog.get_logger(__name__)
 class Settings(BaseSettings):
     """Application settings loaded from environment variables"""
 
-    # API Settings
-    api_key: str = ""
-    host: str = "0.0.0.0"
-    port: int = 8001
+    # =============  Application Settings =============
+    app_name: str = "TrustVault"
+    app_version: str = "1.0.0"
+    app_description: str = "Universal Trust Verification Platform"
     debug: bool = False
+    environment: str = "development"
 
-    # LLM Settings - Gemma 3 270M Q4 (~200MB model, ~450MB RAM)
+    # =============  Server Settings =============
+    host: str = "0.0.0.0"
+    port: int = 8000
+    workers: int = 4
+
+    # =============  Security Settings =============
+    api_key: str = ""
+    jwt_secret: str = ""
+    allowed_origins: List[str] = ["*"]
+
+    # =============  ML Model Settings =============
+    model_cache_dir: str = "./models"
+
+    # LLM - Gemma 3 270M Q4
     llm_model_path: str = "./models/gemma-3-270m-it-q4_k_m.gguf"
-    llm_context_size: int = 2048  # Small context for memory efficiency
+    llm_context_size: int = 2048
     llm_max_tokens: int = 512
     llm_temperature: float = 0.7
-    llm_threads: int = 8  # CPU threads for inference (increased from 4 for better performance)
+    llm_threads: int = 8
 
-    # Face Detection & Recognition - InsightFace buffalo_l (~300MB models)
-    # Production-grade face recognition with 512-dim ArcFace embeddings
+    # =============  Face Verification Settings =============
     face_detection_threshold: float = Field(
         default=0.7,
         ge=0.0,
@@ -40,55 +54,71 @@ class Settings(BaseSettings):
         default=0.85,
         ge=0.0,
         le=1.0,
-        description="Face match threshold for KYC. 0.85 = 85% similarity for production."
+        description="Face match threshold. 0.85 = 85% similarity."
     )
-    face_match_threshold_warning_low: float = 0.70  # Warn if threshold < 70%
-    face_match_threshold_warning_high: float = 0.90  # Warn if threshold > 90%
-    face_embedding_dim: int = 512  # InsightFace ArcFace ResNet100
-    enable_age_adjustment: bool = False  # Disabled by default for security
+    face_match_threshold_warning_low: float = 0.70
+    face_match_threshold_warning_high: float = 0.90
+    face_embedding_dim: int = 512
+    enable_age_adjustment: bool = False
 
-    # InsightFace provides integrated age/gender estimation
-    # No separate models needed - all included in buffalo_l pack
+    # =============  Liveness Settings =============
+    liveness_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    liveness_min_blur_variance: float = 50.0
+    liveness_min_saturation: float = 0.05
+    liveness_min_face_ratio: float = 0.1
+    liveness_max_face_ratio: float = 0.8
+    min_face_size: int = 80
 
-    # OCR - Tesseract (~30MB disk, ~80MB RAM)
+    # =============  OCR Settings =============
     tesseract_lang: str = "eng"
     tesseract_config: str = "--oem 3 --psm 6"
 
-    # KYC Settings - Liveness Detection
-    liveness_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
-    liveness_min_blur_variance: float = 50.0  # Laplacian variance threshold
-    liveness_min_saturation: float = 0.05  # Minimum color saturation (0-1)
-    liveness_min_face_ratio: float = 0.1  # Min face size relative to image
-    liveness_max_face_ratio: float = 0.8  # Max face size relative to image
-    min_face_size: int = 80
+    # =============  Trust Score Settings =============
+    trust_auto_approve_threshold: float = 0.85
+    trust_manual_review_threshold: float = 0.50
+    trust_rejection_threshold: float = 0.50
 
-    # Model cache directory
-    model_cache_dir: str = "./models"
+    # =============  Rate Limiting =============
+    rate_limit_requests: int = 100
+    rate_limit_window: int = 60
+
+    # =============  Webhook Settings =============
+    webhook_timeout: int = 30
+    webhook_retry_count: int = 3
+    webhook_retry_delay: int = 60
+
+    # =============  Feature Flags =============
+    enable_business_verification: bool = True
+    enable_consent_recording: bool = True
+    enable_scam_detection: bool = False
+    enable_deepfake_detection: bool = False
+
+    # =============  Database (Optional) =============
+    database_url: str = "sqlite:///./trustvault.db"
+    redis_url: Optional[str] = None
+
+    # =============  Storage (Optional) =============
+    storage_backend: str = "local"
+    storage_path: str = "./storage"
+    s3_bucket: Optional[str] = None
+    s3_region: Optional[str] = None
 
     @field_validator('face_match_threshold')
     @classmethod
     def validate_face_threshold(cls, v: float) -> float:
-        """Validate face match threshold and log warnings"""
+        """Validate face match threshold"""
         if v < 0.70:
             logger.warning(
                 "face_match_threshold.too_low",
                 threshold=v,
-                risk="May allow impersonation attacks (sibling/twin acceptance)",
-                recommendation="Use threshold >= 0.75 for production KYC"
+                recommendation="Use threshold >= 0.75 for production"
             )
         if v > 0.90:
             logger.warning(
                 "face_match_threshold.too_high",
                 threshold=v,
-                risk="May cause false rejections of legitimate users",
-                recommendation="Use threshold <= 0.90 to avoid UX issues"
+                recommendation="Use threshold <= 0.90"
             )
-
-        logger.info(
-            "face_match_threshold.configured",
-            threshold=v,
-            description=f"{int(v*100)}% similarity required for face match"
-        )
         return v
 
     class Config:

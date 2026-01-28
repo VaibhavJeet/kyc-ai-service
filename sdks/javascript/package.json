@@ -1,0 +1,37 @@
+{
+  "name": "@trustvault/sdk",
+  "version": "1.0.0",
+  "description": "Official JavaScript SDK for TrustVault API",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "jest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "trustvault",
+    "kyc",
+    "verification",
+    "identity",
+    "face-recognition"
+  ],
+  "author": "TrustVault",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trustvault/sdk-javascript"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.0"
+  }
+}

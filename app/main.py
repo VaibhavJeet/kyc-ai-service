@@ -1,6 +1,15 @@
 """
-AI Service - Ultra-Lightweight FastAPI Microservice
-Handles: Chat, Content Generation, KYC Verification
+TrustVault - Universal Trust Verification Platform
+API-First SaaS for Identity and Business Verification
+
+Features:
+- Face verification with liveness detection
+- Document OCR and extraction
+- Unified Trust Score calculation
+- Business verification (Reverse KYC)
+- Webhook notifications
+- Multi-tenant support (coming soon)
+
 Total footprint: ~325MB disk, ~750MB RAM peak
 """
 
@@ -16,8 +25,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-from app.core.config import get_settings
-from app.api.routes import router
+from app.config import get_settings
+from app.api.v1.router import router as v1_router
 from app.services.llm_service import get_llm_service
 from app.services.face_service import get_face_service
 from app.services.ocr_service import get_ocr_service
@@ -41,11 +50,10 @@ logger = structlog.get_logger(__name__)
 
 
 async def check_and_download_models():
-    """Check for LLM model and download if missing. InsightFace downloads automatically."""
+    """Check for ML models and download if missing."""
     settings = get_settings()
     models_dir = Path(settings.model_cache_dir)
 
-    # Required models - InsightFace buffalo_l downloads automatically at runtime
     required_models = [
         "gemma-3-270m-it-q4_k_m.gguf",
     ]
@@ -55,7 +63,6 @@ async def check_and_download_models():
     if missing:
         logger.info(f"Missing {len(missing)} models, attempting download...")
         try:
-            # Import and run downloader
             sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
             from download_models import ModelDownloader
 
@@ -64,13 +71,20 @@ async def check_and_download_models():
         except Exception as e:
             logger.warning(f"Auto-download failed: {e}. Run 'python scripts/download_models.py' manually.")
     else:
-        logger.info("LLM model present. InsightFace will download automatically.")
+        logger.info("All models present. InsightFace will download automatically on first use.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - initialize and cleanup services"""
-    logger.info("Starting AI Service...")
+    settings = get_settings()
+
+    logger.info(
+        "trustvault.starting",
+        app_name=settings.app_name,
+        version=settings.app_version,
+        environment=settings.environment
+    )
 
     # Check and download models if missing
     await check_and_download_models()
@@ -86,7 +100,7 @@ async def lifespan(app: FastAPI):
     ocr_ok = await ocr.initialize()
 
     logger.info(
-        "Services initialized",
+        "trustvault.services_initialized",
         llm=llm_ok,
         face=face_ok,
         ocr=ocr_ok
@@ -95,7 +109,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
-    logger.info("Shutting down AI Service...")
+    logger.info("trustvault.shutting_down")
     llm.unload()
     face.unload()
 
@@ -104,12 +118,41 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 
 app = FastAPI(
-    title="AI Service",
-    description="Ultra-lightweight AI microservice for Chat, Content Generation, and KYC",
-    version="1.0.0",
+    title="TrustVault",
+    description="""
+## Universal Trust Verification Platform
+
+TrustVault provides comprehensive identity and business verification services.
+
+### Features
+- **Face Verification**: Compare selfie with document photo
+- **Liveness Detection**: Anti-spoof protection
+- **Document OCR**: Extract data from ID documents
+- **Trust Score**: Unified verification confidence score
+- **Business Verification**: Verify businesses (Reverse KYC)
+- **Webhooks**: Real-time event notifications
+
+### Authentication
+All API endpoints require an `X-API-Key` header.
+
+### Rate Limits
+- 100 requests per minute per API key
+- 10 concurrent requests per API key
+
+### Support
+For API support, contact: support@trustvault.io
+    """,
+    version=settings.app_version,
     lifespan=lifespan,
-    docs_url="/docs" if settings.debug else None,
-    redoc_url="/redoc" if settings.debug else None,
+    docs_url="/docs" if settings.debug else "/docs",
+    redoc_url="/redoc" if settings.debug else "/redoc",
+    openapi_tags=[
+        {"name": "Health", "description": "Health check endpoints"},
+        {"name": "Verification", "description": "Identity verification services"},
+        {"name": "Trust Score", "description": "Trust score calculation"},
+        {"name": "Protection", "description": "Fraud protection services"},
+        {"name": "Webhooks", "description": "Webhook management"},
+    ]
 )
 
 # Initialize rate limiter
@@ -117,60 +160,56 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS configuration - IMPORTANT: Allow both frontend AND backend origins
-# Backend-to-backend communication requires NestJS backend in allowed origins
-allowed_origins = [
-    # Frontend origins (actual domains you own)
-    "https://kamaodaily.com",
-    "https://www.kamaodaily.com",  # www subdomain
+# CORS configuration
+allowed_origins = settings.allowed_origins
 
-    # Backend origins (for KYC service-to-service calls)
-    "https://api.kamaodaily.com",
-    "https://staging-api.kamaodaily.com",  # Staging backend
-
-    # Docker internal network (if using Docker Compose)
-    "http://taskhub-backend:3000",
-]
-
-# Add localhost origins in debug mode
 if settings.debug:
-    allowed_origins.extend([
-        "http://localhost:3000",
-        "http://localhost:3001",  # NestJS backend dev port
-        "http://localhost:4200",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-    ])
+    allowed_origins = ["*"]  # Allow all in debug mode
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-API-Key"],
-    max_age=3600,  # Cache preflight requests for 1 hour
+    max_age=3600,
 )
 
-# Include routes
-app.include_router(router)
+# Include API routers
+app.include_router(v1_router, prefix="/api")
 
 
 # Root endpoint
-@app.get("/")
+@app.get("/", tags=["Root"])
 async def root():
+    """
+    TrustVault API root endpoint.
+    Returns API information and available endpoints.
+    """
     return {
-        "service": "AI Service",
-        "version": "1.0.0",
+        "name": "TrustVault",
+        "version": settings.app_version,
+        "description": "Universal Trust Verification Platform",
+        "tagline": "Trust, Verified. Everywhere.",
+        "documentation": "/docs",
+        "health": "/api/v1/health",
         "endpoints": {
-            "health": "/api/v1/health",
-            "chat": "/api/v1/chat",
-            "title": "/api/v1/generate/title",
-            "description": "/api/v1/generate/description",
-            "budget": "/api/v1/generate/budget",
-            "kyc_compare": "/api/v1/kyc/compare-faces",
-            "kyc_liveness": "/api/v1/kyc/liveness",
-            "kyc_ocr": "/api/v1/kyc/ocr",
-            "kyc_verify": "/api/v1/kyc/verify",
+            "verify": {
+                "face": "/api/v1/verify/face",
+                "liveness": "/api/v1/verify/liveness",
+                "document": "/api/v1/verify/document",
+                "kyc": "/api/v1/verify/kyc",
+                "business": "/api/v1/verify/business",
+            },
+            "trust": {
+                "score": "/api/v1/trust/score",
+                "decision": "/api/v1/trust/decision",
+            },
+            "protect": {
+                "scam_check": "/api/v1/protect/scam-check",
+                "alert": "/api/v1/protect/alert",
+            },
+            "webhooks": "/api/v1/webhooks",
         }
     }
 
@@ -181,5 +220,6 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.host,
         port=settings.port,
-        reload=settings.debug
+        reload=settings.debug,
+        workers=1 if settings.debug else settings.workers
     )

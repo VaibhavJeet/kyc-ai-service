@@ -1,11 +1,15 @@
-# AI Service - Ultra-Lightweight Dependencies
-# Total footprint: ~325MB disk, ~750MB peak RAM
+# TrustVault - Universal Trust Verification Platform
+# Total footprint: ~350MB disk, ~800MB peak RAM
 
+# ===========================================
 # Build tools
+# ===========================================
 setuptools>=69.0.0
 wheel>=0.42.0
 
+# ===========================================
 # FastAPI and server
+# ===========================================
 fastapi>=0.109.0,<1.0.0
 uvicorn[standard]>=0.27.0,<1.0.0
 python-multipart>=0.0.6,<1.0.0
@@ -13,36 +17,78 @@ pydantic>=2.5.0,<3.0.0
 pydantic-settings>=2.1.0,<3.0.0
 slowapi>=0.1.9,<1.0.0  # Rate limiting
 
+# ===========================================
+# Database
+# ===========================================
+sqlalchemy>=2.0.0,<3.0.0
+alembic>=1.13.0,<2.0.0  # Migrations
+
+# SQLite (built-in) for development
+# PostgreSQL for production:
+# psycopg2-binary>=2.9.0,<3.0.0
+# asyncpg>=0.29.0,<1.0.0  # Async PostgreSQL
+
+# Redis (optional, for caching)
+# redis>=5.0.0,<6.0.0
+
+# ===========================================
 # LLM - llama.cpp Python bindings
-# Gemma 3 270M Q4 (~200MB model, ~450MB RAM)
+# ===========================================
 llama-cpp-python>=0.2.90,<1.0.0
 
-# LangChain for orchestration and agents (~40-60MB RAM)
+# LangChain for orchestration
 langchain>=0.3.0,<1.0.0
 langchain-core>=0.3.0,<1.0.0
 
-# Image processing - minimal dependencies
+# ===========================================
+# Image processing
+# ===========================================
 numpy>=1.26.0,<2.0.0
 scipy>=1.11.0,<2.0.0
 Pillow>=10.2.0,<11.0.0
 
-# OCR - Tesseract (C++ based, ~30MB, ~80MB RAM)
-# pytesseract is just a wrapper, actual tesseract must be installed on system
-pytesseract>=0.3.10,<1.0.0
-
-# Utilities
-httpx>=0.26.0,<1.0.0
-aiofiles>=23.2.0,<24.0.0
-
-# Logging
-structlog>=24.1.0,<25.0.0
-
-# Testing
-pytest>=7.4.0,<8.0.0
-pytest-asyncio>=0.23.0,<1.0.0
-
-# InsightFace for Production-Grade KYC (Added Jan 2026)
-# Uses specific versions for production stability
+# ===========================================
+# Face Recognition - InsightFace
+# ===========================================
 insightface==0.7.3
 onnxruntime==1.20.1
 opencv-python-headless==4.10.0.84
+
+# ===========================================
+# OCR - Tesseract
+# ===========================================
+pytesseract>=0.3.10,<1.0.0
+
+# ===========================================
+# HTTP & Async
+# ===========================================
+httpx>=0.26.0,<1.0.0
+aiofiles>=23.2.0,<24.0.0
+aiohttp>=3.9.0,<4.0.0  # For webhook delivery
+
+# ===========================================
+# Security
+# ===========================================
+python-jose[cryptography]>=3.3.0,<4.0.0  # JWT
+passlib[bcrypt]>=1.7.4,<2.0.0  # Password hashing
+cryptography>=42.0.0,<43.0.0  # Encryption
+
+# ===========================================
+# Logging & Monitoring
+# ===========================================
+structlog>=24.1.0,<25.0.0
+
+# ===========================================
+# Testing
+# ===========================================
+pytest>=7.4.0,<8.0.0
+pytest-asyncio>=0.23.0,<1.0.0
+pytest-cov>=4.1.0,<5.0.0
+httpx  # For testing FastAPI
+
+# ===========================================
+# Development (optional)
+# ===========================================
+# black>=24.0.0  # Code formatting
+# ruff>=0.1.0    # Linting
+# mypy>=1.8.0    # Type checking
